@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Bans — Scrim Dashboard{% endblock %}
+{% block page_title %}Ban Management{% endblock %}
+
+{% block content %}
+<!-- Add ban form -->
+<section class="section">
+    <h2 class="section-title">Add Ban</h2>
+    <div class="glass-card form-card">
+        <form method="post" action="/bans/add" class="inline-form">
+            <div class="form-group">
+                <label for="discord_id">Discord User ID</label>
+                <input type="number" name="discord_id" id="discord_id" required class="form-input" placeholder="e.g. 123456789012345678">
+            </div>
+            <div class="form-group">
+                <label for="reason">Reason</label>
+                <input type="text" name="reason" id="reason" class="form-input" placeholder="Ban reason">
+            </div>
+            <div class="form-group">
+                <label for="duration_hours">Duration (hours, 0=permanent)</label>
+                <input type="number" name="duration_hours" id="duration_hours" value="0" min="0" class="form-input">
+            </div>
+            <button type="submit" class="btn btn-danger">Ban Player</button>
+        </form>
+    </div>
+</section>
+
+<!-- Active bans -->
+<section class="section">
+    <h2 class="section-title">Active Bans ({{ bans|length }})</h2>
+    {% if bans %}
+    <div class="table-container glass-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Discord ID</th>
+                    <th>Reason</th>
+                    <th>Banned By</th>
+                    <th>Banned At</th>
+                    <th>Expires</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for b in bans %}
+                <tr>
+                    <td><code>{{ b.discord_id }}</code></td>
+                    <td>{{ b.reason or '—' }}</td>
+                    <td>{{ b.banned_by }}</td>
+                    <td>{{ b.banned_at.strftime('%Y-%m-%d %H:%M') if b.banned_at else '—' }}</td>
+                    <td>
+                        {% if b.expires_at %}
+                        {{ b.expires_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% else %}
+                        <span class="badge badge-error">Permanent</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="/bans/remove" class="inline">
+                            <input type="hidden" name="discord_id" value="{{ b.discord_id }}">
+                            <button type="submit" class="btn btn-sm btn-outline" onclick="return confirm('Unban this player?')">Unban</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state glass-card">
+        <p>No active bans. 🎉</p>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

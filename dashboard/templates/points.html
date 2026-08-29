@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Points — Scrim Dashboard{% endblock %}
+{% block page_title %}Points & Leaderboard{% endblock %}
+
+{% block header_actions %}
+<form class="filter-form" method="get" action="/points">
+    <select name="panel_id" class="form-select" onchange="this.form.submit()">
+        <option value="">Select Panel</option>
+        {% for p in panels %}
+        <option value="{{ p.panel_id }}" {% if current_panel == p.panel_id %}selected{% endif %}>{{ p.panel_id }} — {{ p.window }}</option>
+        {% endfor %}
+    </select>
+</form>
+{% endblock %}
+
+{% block content %}
+{% if standings %}
+<!-- Podium -->
+<div class="podium-container">
+    {% if standings|length >= 3 %}
+    <div class="podium">
+        <div class="podium-place second">
+            <div class="podium-medal">🥈</div>
+            <div class="podium-name">{{ standings[1]._id }}</div>
+            <div class="podium-points">{{ standings[1].total_points|int }} pts</div>
+            <div class="podium-bar"></div>
+        </div>
+        <div class="podium-place first">
+            <div class="podium-medal">🥇</div>
+            <div class="podium-name">{{ standings[0]._id }}</div>
+            <div class="podium-points">{{ standings[0].total_points|int }} pts</div>
+            <div class="podium-bar"></div>
+        </div>
+        <div class="podium-place third">
+            <div class="podium-medal">🥉</div>
+            <div class="podium-name">{{ standings[2]._id }}</div>
+            <div class="podium-points">{{ standings[2].total_points|int }} pts</div>
+            <div class="podium-bar"></div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Full table -->
+<div class="table-container glass-card">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Team</th>
+                <th>Points</th>
+                <th>Kills</th>
+                <th>Best Placement</th>
+                <th>Matches</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in standings %}
+            <tr class="{% if loop.index <= 3 %}highlight-row{% endif %}">
+                <td>{{ loop.index }}</td>
+                <td><strong>{{ s._id }}</strong></td>
+                <td class="points-cell">{{ s.total_points|int }}</td>
+                <td>{{ s.total_kills }}</td>
+                <td>#{{ s.best_placement }}</td>
+                <td>{{ s.matches }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% elif current_panel %}
+<div class="empty-state glass-card">
+    <p>No points recorded for <strong>{{ current_panel }}</strong> yet.</p>
+</div>
+{% else %}
+<div class="empty-state glass-card">
+    <p>Select a panel to view standings.</p>
+</div>
+{% endif %}
+{% endblock %}

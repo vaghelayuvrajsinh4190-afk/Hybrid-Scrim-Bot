@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Groups — Scrim Dashboard{% endblock %}
+{% block page_title %}Groups / Lobbies{% endblock %}
+
+{% block content %}
+{% if groups %}
+<div class="cards-grid">
+    {% for g in groups %}
+    <div class="glass-card group-card">
+        <h3>Group #{{ g.group_number }}</h3>
+        <div class="channel-list">
+            {% for key, cid in g.channel_ids.items() %}
+            <div class="channel-item">
+                <span class="channel-type">{{ key }}</span>
+                <span class="channel-id">{{ cid }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state glass-card">
+    <p>No groups created. Use <code>/set_groups &lt;count&gt;</code> in Discord.</p>
+</div>
+{% endif %}
+{% endblock %}

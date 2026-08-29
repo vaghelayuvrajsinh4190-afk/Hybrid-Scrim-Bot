@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Teams — Scrim Dashboard{% endblock %}
+{% block page_title %}Teams{% endblock %}
+
+{% block header_actions %}
+<form class="filter-form" method="get" action="/teams">
+    <select name="panel_id" class="form-select">
+        <option value="">All Panels</option>
+        {% for p in panels %}
+        <option value="{{ p.panel_id }}" {% if current_panel == p.panel_id %}selected{% endif %}>{{ p.panel_id }}</option>
+        {% endfor %}
+    </select>
+    <input type="text" name="search" value="{{ search }}" placeholder="Search teams…" class="form-input">
+    <button type="submit" class="btn btn-primary">Filter</button>
+</form>
+{% endblock %}
+
+{% block content %}
+{% if teams %}
+<div class="table-container glass-card">
+    <table class="data-table" id="teams-table">
+        <thead>
+            <tr>
+                <th>Slot</th>
+                <th>Team Name</th>
+                <th>Panel</th>
+                <th>Window</th>
+                <th>Members</th>
+                <th>Status</th>
+                <th>Registered</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in teams %}
+            <tr>
+                <td>{{ t.slot_number or '—' }}</td>
+                <td><strong>{{ t.team_name }}</strong></td>
+                <td><span class="badge badge-primary">{{ t.panel_id }}</span></td>
+                <td>{{ t.window }}</td>
+                <td>
+                    {% for m in t.members %}
+                    <span class="member-id">{{ m }}</span>
+                    {% endfor %}
+                </td>
+                <td>
+                    {% if t.confirmed %}
+                    <span class="badge badge-success">Confirmed</span>
+                    {% elif t.reg_status == 'completed' %}
+                    <span class="badge badge-info">Registered</span>
+                    {% elif t.reg_status == 'pending' %}
+                    <span class="badge badge-warning">Pending</span>
+                    {% else %}
+                    <span class="badge badge-muted">{{ t.reg_status }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ t.registered_at.strftime('%Y-%m-%d %H:%M') if t.registered_at else '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty-state glass-card">
+    <p>No teams found{% if search %} matching "{{ search }}"{% endif %}.</p>
+</div>
+{% endif %}
+{% endblock %}

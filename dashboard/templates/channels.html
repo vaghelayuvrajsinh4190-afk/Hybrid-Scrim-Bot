@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Channels — Scrim Dashboard{% endblock %}
+{% block page_title %}Channel Overview{% endblock %}
+
+{% block content %}
+<!-- Panel channels -->
+<section class="section">
+    <h2 class="section-title">Panel Channels</h2>
+    {% if panels %}
+    <div class="table-container glass-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Panel</th>
+                    <th>Category</th>
+                    <th>Registration</th>
+                    <th>Tag</th>
+                    <th>Confirmation</th>
+                    <th>Slot Mgmt</th>
+                    <th>Role ID</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in panels %}
+                <tr>
+                    <td><span class="badge badge-primary">{{ p.panel_id }}</span></td>
+                    <td><code>{{ p.channel_ids.get('category_id', '—') if p.channel_ids else '—' }}</code></td>
+                    <td><code>{{ p.channel_ids.get('reg_channel_id', '—') if p.channel_ids else '—' }}</code></td>
+                    <td><code>{{ p.channel_ids.get('tag_channel_id', '—') if p.channel_ids else '—' }}</code></td>
+                    <td><code>{{ p.channel_ids.get('conf_channel_id', '—') if p.channel_ids else '—' }}</code></td>
+                    <td><code>{{ p.channel_ids.get('slotmng_channel_id', '—') if p.channel_ids else '—' }}</code></td>
+                    <td><code>{{ p.role_id or '—' }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state glass-card"><p>No panels.</p></div>
+    {% endif %}
+</section>
+
+<!-- Shared channels -->
+<section class="section">
+    <h2 class="section-title">Shared Channels</h2>
+    <div class="glass-card form-card">
+        {% if shared_channels %}
+        <div class="channel-list-detail">
+            {% for key, val in shared_channels.items() %}
+            {% if key != '_id' and key != 'guild_id' %}
+            <div class="channel-item">
+                <span class="channel-type">{{ key.replace('_', ' ').title() }}</span>
+                <code class="channel-id">{{ val }}</code>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>No shared channels configured yet.</p>
+        {% endif %}
+    </div>
+</section>
+
+<div class="info-note glass-card">
+    <p>💡 To rename channels, use <code>/panel channels &lt;panel_id&gt;</code> in Discord.<br>
+    Rename cooldown: 2 renames per 10 minutes per channel.</p>
+</div>
+{% endblock %}

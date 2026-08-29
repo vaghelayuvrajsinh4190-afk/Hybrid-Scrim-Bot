@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Settings — Scrim Dashboard{% endblock %}
+{% block page_title %}Settings & Data Management{% endblock %}
+
+{% block content %}
+{% if message %}
+<div class="alert alert-success">✅ {{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">❌ {{ error }}</div>
+{% endif %}
+
+<div class="settings-grid">
+    <!-- Purge Screenshots -->
+    <div class="glass-card danger-card">
+        <h3>🗑️ Purge Screenshots</h3>
+        <p>Delete <strong>all</strong> verification/screenshot records. This cannot be undone.</p>
+        <form method="post" action="/settings/purge-screenshots" class="confirm-form">
+            <input type="text" name="confirmation" class="form-input" placeholder='Type "DELETE SCREENSHOTS" to confirm' autocomplete="off">
+            <button type="submit" class="btn btn-danger">Purge</button>
+        </form>
+    </div>
+
+    <!-- Clear Pending Claims -->
+    <div class="glass-card danger-card">
+        <h3>🧹 Clear Pending Claims</h3>
+        <p>Remove all <strong>pending</strong> registrations. Completed registrations are preserved.</p>
+        <form method="post" action="/settings/clear-pending-claims" class="confirm-form">
+            <input type="text" name="confirmation" class="form-input" placeholder='Type "CLEAR CLAIMS" to confirm' autocomplete="off">
+            <button type="submit" class="btn btn-danger">Clear</button>
+        </form>
+    </div>
+
+    <!-- Clear Logs -->
+    <div class="glass-card danger-card">
+        <h3>📋 Clear Logs</h3>
+        <p>Delete all audit log entries.</p>
+        <form method="post" action="/settings/clear-logs" class="confirm-form">
+            <input type="text" name="confirmation" class="form-input" placeholder='Type "CLEAR LOGS" to confirm' autocomplete="off">
+            <button type="submit" class="btn btn-danger">Clear</button>
+        </form>
+    </div>
+
+    <!-- Wipe Panel Data -->
+    <div class="glass-card danger-card">
+        <h3>💥 Wipe Panel Data</h3>
+        <p>Delete <strong>all registrations and teams</strong> for a specific panel. Panel config is preserved.</p>
+        <form method="post" action="/settings/wipe-panel-data" class="confirm-form">
+            <select name="panel_id" class="form-select" required>
+                <option value="">Select Panel</option>
+                {% for p in panels %}
+                <option value="{{ p.panel_id }}">{{ p.panel_id }} — {{ p.window }}</option>
+                {% endfor %}
+            </select>
+            <input type="text" name="confirmation" class="form-input" placeholder='Type "WIPE T1" (replace T1 with panel ID)' autocomplete="off">
+            <button type="submit" class="btn btn-danger">Wipe</button>
+        </form>
+    </div>
+</div>
+
+<div class="info-note glass-card">
+    <p>⚠️ These actions <strong>never</strong> touch permanent collections: players, bans, points, groups.</p>
+</div>
+{% endblock %}

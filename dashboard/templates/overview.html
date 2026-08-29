@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Overview — Scrim Dashboard{% endblock %}
+{% block page_title %}Overview{% endblock %}
+
+{% block content %}
+<!-- Stats grid -->
+<div class="stats-grid">
+    <div class="stat-card glass-card">
+        <div class="stat-icon">📋</div>
+        <div class="stat-value">{{ stats.panels }}</div>
+        <div class="stat-label">Active Panels</div>
+    </div>
+    <div class="stat-card glass-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ stats.teams }}</div>
+        <div class="stat-label">Teams</div>
+    </div>
+    <div class="stat-card glass-card">
+        <div class="stat-icon">🎮</div>
+        <div class="stat-value">{{ stats.players }}</div>
+        <div class="stat-label">Linked Players</div>
+    </div>
+    <div class="stat-card glass-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">{{ stats.active_claims }}</div>
+        <div class="stat-label">Pending Claims</div>
+    </div>
+    <div class="stat-card glass-card">
+        <div class="stat-icon">🚫</div>
+        <div class="stat-value">{{ stats.bans }}</div>
+        <div class="stat-label">Active Bans</div>
+    </div>
+    <div class="stat-card glass-card">
+        <div class="stat-icon">📸</div>
+        <div class="stat-value">{{ stats.pending_verifications }}</div>
+        <div class="stat-label">Pending Reviews</div>
+    </div>
+</div>
+
+<!-- Active panels -->
+<section class="section">
+    <h2 class="section-title">Active Panels</h2>
+    {% if panels %}
+    <div class="table-container glass-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Panel ID</th>
+                    <th>Window</th>
+                    <th>Max Slots</th>
+                    <th>Match Start</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in panels %}
+                <tr>
+                    <td><span class="badge badge-primary">{{ p.panel_id }}</span></td>
+                    <td>{{ p.window }}</td>
+                    <td>{{ p.max_slots }}</td>
+                    <td>{{ p.match_start_time.strftime('%Y-%m-%d %H:%M') if p.match_start_time else '—' }}</td>
+                    <td>{{ p.created_at.strftime('%Y-%m-%d') if p.created_at else '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state glass-card">
+        <p>No panels created yet. Use <code>/panel create</code> in Discord.</p>
+    </div>
+    {% endif %}
+</section>
+
+<!-- Recent activity -->
+<section class="section">
+    <h2 class="section-title">Recent Activity</h2>
+    {% if recent_logs %}
+    <div class="activity-list">
+        {% for log in recent_logs %}
+        <div class="activity-item glass-card">
+            <div class="activity-action">{{ log.action }}</div>
+            <div class="activity-details">
+                by <strong>&lt;@{{ log.actor_discord_id }}&gt;</strong>
+                {% if log.details %}
+                — {{ log.details | tojson }}
+                {% endif %}
+            </div>
+            <div class="activity-time">{{ log.timestamp.strftime('%Y-%m-%d %H:%M') if log.timestamp else '' }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state glass-card">
+        <p>No recent activity.</p>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

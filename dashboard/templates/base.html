@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Scrim Bot Dashboard — Manage BGMI scrims, teams, and leaderboards.">
+    <title>{% block title %}Scrim Dashboard{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">⚔️</span>
+                    <span class="logo-text">ScrimBot</span>
+                </div>
+            </div>
+            <ul class="nav-links">
+                <li><a href="/overview" class="nav-link {% if page == 'overview' %}active{% endif %}"><span class="nav-icon">📊</span> Overview</a></li>
+                <li><a href="/teams" class="nav-link {% if page == 'teams' %}active{% endif %}"><span class="nav-icon">👥</span> Teams</a></li>
+                <li><a href="/groups" class="nav-link {% if page == 'groups' %}active{% endif %}"><span class="nav-icon">🏠</span> Groups</a></li>
+                <li><a href="/points" class="nav-link {% if page == 'points' %}active{% endif %}"><span class="nav-icon">🏆</span> Points</a></li>
+                <li><a href="/verifications" class="nav-link {% if page == 'verifications' %}active{% endif %}"><span class="nav-icon">📸</span> Verifications</a></li>
+                <li><a href="/bans" class="nav-link {% if page == 'bans' %}active{% endif %}"><span class="nav-icon">🚫</span> Bans</a></li>
+                <li><a href="/channels" class="nav-link {% if page == 'channels' %}active{% endif %}"><span class="nav-icon">📺</span> Channels</a></li>
+                <li><a href="/settings" class="nav-link {% if page == 'settings' %}active{% endif %}"><span class="nav-icon">⚙️</span> Settings</a></li>
+            </ul>
+            <div class="sidebar-footer">
+                {% if user %}
+                <div class="user-card">
+                    <img src="{{ user.avatar_url }}" alt="avatar" class="user-avatar">
+                    <div class="user-info">
+                        <span class="user-name">{{ user.global_name or user.username }}</span>
+                        <span class="user-role">Admin</span>
+                    </div>
+                </div>
+                <a href="/logout" class="logout-btn">Logout</a>
+                {% endif %}
+            </div>
+        </nav>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <header class="page-header">
+                <h1 id="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+                <div class="header-actions">
+                    {% block header_actions %}{% endblock %}
+                </div>
+            </header>
+            <div class="content-body">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

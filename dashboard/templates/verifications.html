@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Verifications — Scrim Dashboard{% endblock %}
+{% block page_title %}Screenshot Verifications{% endblock %}
+
+{% block header_actions %}
+<div class="filter-tabs">
+    <a href="/verifications" class="tab {% if not current_status %}active{% endif %}">
+        All
+    </a>
+    <a href="/verifications?status=pending" class="tab {% if current_status == 'pending' %}active{% endif %}">
+        Pending <span class="count-badge">{{ counts.pending }}</span>
+    </a>
+    <a href="/verifications?status=approved" class="tab {% if current_status == 'approved' %}active{% endif %}">
+        Approved <span class="count-badge">{{ counts.approved }}</span>
+    </a>
+    <a href="/verifications?status=rejected" class="tab {% if current_status == 'rejected' %}active{% endif %}">
+        Rejected <span class="count-badge">{{ counts.rejected }}</span>
+    </a>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if verifications %}
+<div class="verification-grid">
+    {% for v in verifications %}
+    <div class="glass-card verification-card">
+        <div class="verification-header">
+            <h3>{{ v.team_name }}</h3>
+            <span class="badge {% if v.status == 'approved' %}badge-success{% elif v.status == 'pending' %}badge-warning{% else %}badge-error{% endif %}">
+                {{ v.status }}
+            </span>
+        </div>
+        <div class="verification-meta">
+            <span>Panel: {{ v.panel_id }}</span>
+            <span>Window: {{ v.window }}</span>
+            <span>By: {{ v.submitted_by }}</span>
+        </div>
+        <div class="screenshot-gallery">
+            {% for url in v.screenshot_urls %}
+            <a href="{{ url }}" target="_blank" class="screenshot-thumb">
+                <img src="{{ url }}" alt="Screenshot" loading="lazy">
+            </a>
+            {% endfor %}
+        </div>
+        <div class="verification-footer">
+            <span class="timestamp">{{ v.submitted_at.strftime('%Y-%m-%d %H:%M') if v.submitted_at else '' }}</span>
+            {% if v.reviewed_by %}
+            <span>Reviewed by: {{ v.reviewed_by }}</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state glass-card">
+    <p>No verifications{% if current_status %} with status "{{ current_status }}"{% endif %}.</p>
+</div>
+{% endif %}
+{% endblock %}
