@@ -38,11 +38,11 @@ class VerificationStatus(str, enum.Enum):
 class PointsTable(BaseModel):
     """Per-panel configurable scoring formula."""
     kill_weight: float = 1.0
-    placement_weights: Dict[int, float] = Field(
+    placement_weights: Dict[str, float] = Field(
         default_factory=lambda: {
-            1: 15, 2: 12, 3: 10, 4: 8, 5: 6,
-            6: 4, 7: 2, 8: 1, 9: 0, 10: 0,
-            11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0,
+            "1": 15, "2": 12, "3": 10, "4": 8, "5": 6,
+            "6": 4, "7": 2, "8": 1, "9": 0, "10": 0,
+            "11": 0, "12": 0, "13": 0, "14": 0, "15": 0, "16": 0,
         },
         description="Mapping of placement rank → bonus points.",
     )
