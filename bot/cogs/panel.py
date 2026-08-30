@@ -151,16 +151,8 @@ class PanelCog(commands.Cog, name="Panel"):
                         inline=False,
                     )
 
-                # Offload progress bar image to worker thread via asyncio.to_thread
-                first_cap = schedules[0].get("capacity", 20) if schedules else 20
-                first_filled = await registrations_col().count_documents({
-                    "guild_id": guild.id, "panel_id": panel_id, "window": window, "status": {"$in": ["pending", "completed"]}
-                })
-                progress_file = await generate_segmented_bar(first_filled, first_cap * max(1, group_count))
-                reg_embed.set_image(url=f"attachment://{progress_file.filename}")
-
                 view = MultiGroupRegisterView(panel_id=panel_id, group_count=group_count)
-                msg = await reg_ch.send(embed=reg_embed, file=progress_file, view=view)
+                msg = await reg_ch.send(embed=reg_embed, view=view)
                 await panels_col().update_one(
                     {"_id": panel["_id"]},
                     {"$set": {"reg_message_id": msg.id}},

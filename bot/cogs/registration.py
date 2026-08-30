@@ -328,9 +328,6 @@ class RegistrationCog(commands.Cog, name="Registration"):
 
         groups_summary = "\n".join(group_lines) if group_lines else ""
 
-        # Generate segmented progress bar image (offloaded to worker thread)
-        bar_file = await generate_segmented_bar(filled, max_slots, filename="progress.png")
-
         if msg.embeds:
             embed = msg.embeds[0]
             embed.clear_fields()
@@ -344,8 +341,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
             if groups_summary:
                 embed.description += f"**Live Groups:**\n{groups_summary}\n\n"
             embed.description += "Click the button below to claim a slot.\n"
-            embed.set_image(url="attachment://progress.png")
-            await msg.edit(embed=embed, attachments=[bar_file])
+            await msg.edit(embed=embed, attachments=[])
 
 
 async def setup(bot: commands.Bot) -> None:
