@@ -36,75 +36,47 @@ class SlotBoardView(ui.View):
         guild_id = interaction.guild_id
         user_id = interaction.user.id
 
-        # Find the user's active registration
-        reg = await registrations_col().find_one({
+        # Find ALL active registrations for the user
+        regs = await registrations_col().find({
             "guild_id": guild_id,
             "claimer_discord_id": user_id,
             "status": {"$in": ["pending", "completed"]},
-        })
-        if reg is None:
+        }).to_list(25)
+
+        if not regs:
             await interaction.response.send_message(
                 "❌ You don't have a slot to cancel.", ephemeral=True,
             )
             return
 
-        panel_id = reg["panel_id"]
-        panel = await panels_col().find_one({
-            "guild_id": guild_id, "panel_id": panel_id,
-        })
-        if panel is None:
-            await interaction.response.send_message(
-                "❌ Panel not found.", ephemeral=True,
-            )
+        # Import shared cancel logic
+        from bot.views.persistent import _execute_cancel, CancelSlotSelectView
+
+        if len(regs) == 1:
+            # Single slot — cancel directly
+            await _execute_cancel(interaction, regs[0], regs[0]["panel_id"])
             return
 
-        # ── Edge Case 3: Cancel-slot lock window ──────────────────────
-        match_start = panel.get("match_start_time")
-        cancel_lock = panel.get("cancel_lock_minutes", 60)
+        # Multiple slots — show selection dropdown
+        options = []
+        for r in regs:
+            gid = r.get("group_id", "G01")
+            panel_id = r.get("panel_id", "?")
+            team_name = r.get("team_name") or "(pending)"
+            options.append(discord.SelectOption(
+                label=f"{panel_id} {gid} — {team_name}",
+                value=str(r["_id"]),
+                description=f"Slot in {panel_id} {gid}",
+            ))
 
-        if match_start:
-            now = datetime.now(timezone.utc)
-            time_until = (match_start - now).total_seconds() / 60
-            if time_until <= cancel_lock:
-                await interaction.response.send_message(
-                    f"❌ Cancellations are locked — match starts in under "
-                    f"**{cancel_lock} minutes**. Contact an admin.",
-                    ephemeral=True,
-                )
-                return
-
-        window = reg["window"]
-
-        # Remove registration + team
-        await registrations_col().delete_one({"_id": reg["_id"]})
-        await teams_col().delete_many({
-            "guild_id": guild_id,
-            "panel_id": panel_id,
-            "window": window,
-            "owner_discord_id": user_id,
-        })
-
-        # Revoke tag-access role
-        role_id = panel.get("role_id")
-        if role_id:
-            role = interaction.guild.get_role(role_id)
-            if role:
-                try:
-                    await interaction.user.remove_roles(
-                        role, reason="Slot cancelled",
-                    )
-                except discord.Forbidden:
-                    pass
-
+        # Use the first panel_id for the view (works since CancelSlotSelectView
+        # looks up the panel from the reg doc itself)
+        view = CancelSlotSelectView(regs[0]["panel_id"], options)
         await interaction.response.send_message(
-            "✅ Your slot has been **cancelled** and is now open.",
+            "❌ You have **multiple active slots**. Select which to cancel:",
+            view=view,
             ephemeral=True,
         )
-
-        # Trigger slot board refresh
-        cog = interaction.client.get_cog("SlotBoard")
-        if cog and hasattr(cog, "refresh_board"):
-            await cog.refresh_board(guild_id, panel_id)
 
     @ui.button(
         label="🔄 Transfer Slot",
@@ -114,24 +86,28 @@ class SlotBoardView(ui.View):
     async def transfer_slot_btn(
         self, interaction: discord.Interaction, button: ui.Button,
     ) -> None:
-        guild_id = interaction.guild_id
-        user_id = interaction.user.id
+        # Admin-only gate
+        from bot.views.persistent import _check_admin
+        if not await _check_admin(interaction):
+            return
 
+        guild_id = interaction.guild_id
+
+        # Find any active registration to determine the panel
         reg = await registrations_col().find_one({
             "guild_id": guild_id,
-            "claimer_discord_id": user_id,
             "status": {"$in": ["pending", "completed"]},
         })
-        if reg is None:
+
+        if not reg:
             await interaction.response.send_message(
-                "❌ You don't have a slot to transfer.", ephemeral=True,
+                "❌ No active registrations found in this panel.",
+                ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
-            "📝 To transfer your slot, mention the user you want to "
-            "transfer to in this channel.\n"
-            "Example: `@NewOwner`\n"
-            "The transfer will be processed by an admin.",
-            ephemeral=True,
+        from bot.views.modals import TransferSlotModal
+        await interaction.response.send_modal(
+            TransferSlotModal(reg["panel_id"], guild_id)
         )
+

@@ -51,8 +51,10 @@ class PointsTable(BaseModel):
 class GroupSchedule(BaseModel):
     """Configuration for an individual lobby / group within a panel."""
     group_id: str = "G01"          # "G01", "G02", ...
-    m1_time: str = ""              # "12:54 PM"
-    m2_time: str = ""              # "01:34 PM"
+    m1_idp_time: str = ""          # "07:30 PM"  — when IDP is posted
+    m2_idp_time: str = ""          # "08:30 PM"
+    m1_time: str = ""              # "08:00 PM"  — match start
+    m2_time: str = ""              # "09:00 PM"
     m1_map: str = "Erangel"
     m2_map: str = "Miramar"
     capacity: int = 20

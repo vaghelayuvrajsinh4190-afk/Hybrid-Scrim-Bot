@@ -27,6 +27,24 @@ from bot.views.modals import LinkIDModal
 log = logging.getLogger(__name__)
 
 
+# ── Shared Admin Check ─────────────────────────────────────────────────────
+
+async def _check_admin(interaction: discord.Interaction) -> bool:
+    """Return True if the member is an Admin. Send ephemeral error and return False otherwise."""
+    if interaction.user.guild_permissions.administrator:
+        return True
+    # Check member roles for any role named "Admin" (case-insensitive fallback)
+    for role in interaction.user.roles:
+        if role.name.lower() == "admin":
+            return True
+    await interaction.response.send_message(
+        "❌ **Permission Denied** — This action is restricted to server Admins. "
+        "If you believe this is an error, contact a server administrator.",
+        ephemeral=True,
+    )
+    return False
+
+
 # ── Link ID Button ─────────────────────────────────────────────────────────
 
 class LinkIDView(ui.View):
@@ -179,10 +197,7 @@ class AdminActionsView(ui.View):
     async def remove_team_btn(
         self, interaction: discord.Interaction, button: ui.Button,
     ) -> None:
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "❌ Admin only.", ephemeral=True,
-            )
+        if not await _check_admin(interaction):
             return
 
         # We expect the team name in the embed the button is attached to
@@ -220,10 +235,7 @@ class AdminActionsView(ui.View):
     async def clear_reg_btn(
         self, interaction: discord.Interaction, button: ui.Button,
     ) -> None:
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "❌ Admin only.", ephemeral=True,
-            )
+        if not await _check_admin(interaction):
             return
 
         if interaction.message and interaction.message.embeds:
@@ -272,10 +284,7 @@ class AdminActionsView(ui.View):
     async def confirm_tag_btn(
         self, interaction: discord.Interaction, button: ui.Button,
     ) -> None:
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "❌ Admin only.", ephemeral=True,
-            )
+        if not await _check_admin(interaction):
             return
 
         if interaction.message and interaction.message.embeds:
@@ -464,8 +473,8 @@ class AdminControlPanelView(ui.View):
     async def _on_sched(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
-        from bot.views.modals import BulkScheduleModal
-        await interaction.response.send_modal(BulkScheduleModal(self.panel_id, interaction.guild_id))
+        from bot.views.modals import GroupScheduleModal
+        await interaction.response.send_modal(GroupScheduleModal(self.panel_id, interaction.guild_id))
 
     async def _on_slots(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
@@ -623,55 +632,114 @@ class SlotManagementView(ui.View):
         self.add_item(btn_role)
 
     async def _on_switch(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("🔀 To switch lobbies, cancel your current slot and claim in your new group.", ephemeral=True)
-
-    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        """Choose Lobby — conditional logic based on multi-lobby setting."""
         guild_id = interaction.guild_id
         user_id = interaction.user.id
 
-        reg = await registrations_col().find_one({
+        panel = await panels_col().find_one({
+            "guild_id": guild_id, "panel_id": self.panel_id,
+        })
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        window = panel.get("window", "8PM")
+        allow_multi = panel.get("allow_multi_group_registration", False)
+
+        # Check if user already has a slot
+        existing = await registrations_col().find_one({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "claimer_discord_id": user_id,
+            "status": {"$in": ["pending", "completed"]},
+        })
+
+        if existing and not allow_multi:
+            return await interaction.response.send_message(
+                "❌ You already have a slot in this window. "
+                "Use **❌ Cancel Slot** first, then re-register for a different lobby.",
+                ephemeral=True,
+            )
+
+        # No slot or multi-lobby ON — show group selection dropdown
+        schedules = panel.get("schedules", [])
+        if not schedules:
+            return await interaction.response.send_message("❌ No groups configured for this panel.", ephemeral=True)
+
+        options = []
+        for s in schedules:
+            gid = s.get("group_id", "G01")
+            cap = s.get("capacity", 20)
+            filled = await registrations_col().count_documents({
+                "guild_id": guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "group_id": gid,
+                "status": {"$in": ["pending", "completed"]},
+            })
+            status = "FULL" if filled >= cap else f"{filled}/{cap}"
+            options.append(discord.SelectOption(
+                label=f"Lobby {gid} ({status})",
+                value=gid,
+                description=f"M1: {s.get('m1_time', 'TBD')} | M2: {s.get('m2_time', 'TBD')}",
+            ))
+
+        view = ChooseLobbySelectView(self.panel_id, options)
+        await interaction.response.send_message(
+            "🔀 **Select a lobby** to register for:",
+            view=view,
+            ephemeral=True,
+        )
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        """Cancel Slot — with lobby selection when player has multiple slots."""
+        guild_id = interaction.guild_id
+        user_id = interaction.user.id
+
+        # Find ALL active registrations for this user in this panel
+        regs = await registrations_col().find({
             "guild_id": guild_id,
             "panel_id": self.panel_id,
             "claimer_discord_id": user_id,
             "status": {"$in": ["pending", "completed"]},
-        })
-        if not reg:
-            return await interaction.response.send_message("❌ You do not have an active slot to cancel.", ephemeral=True)
+        }).to_list(25)
 
-        group_id = reg.get("group_id", "G01")
-        window = reg.get("window", "")
+        if not regs:
+            return await interaction.response.send_message(
+                "❌ You do not have an active slot to cancel.", ephemeral=True,
+            )
 
-        # Atomic MongoDB delete
-        await registrations_col().delete_one({"_id": reg["_id"]})
-        await teams_col().delete_many({
-            "guild_id": guild_id,
-            "panel_id": self.panel_id,
-            "window": window,
-            "owner_discord_id": user_id,
-        })
+        if len(regs) == 1:
+            # Single slot — cancel directly
+            await _execute_cancel(interaction, regs[0], self.panel_id)
+            return
 
-        # Notify reminders subscribers
-        from shared.database import reminders_col
-        reminders = await reminders_col().find({
-            "guild_id": guild_id, "panel_id": self.panel_id, "group_id": group_id
-        }).to_list(100)
+        # Multiple slots — show selection dropdown
+        options = []
+        for r in regs:
+            gid = r.get("group_id", "G01")
+            team_name = r.get("team_name") or "(pending)"
+            options.append(discord.SelectOption(
+                label=f"{gid} — {team_name}",
+                value=str(r["_id"]),
+                description=f"Slot in {gid}",
+            ))
 
-        for rem in reminders:
-            try:
-                user = interaction.guild.get_member(rem["user_id"])
-                if user:
-                    await user.send(f"🔔 **Slot Available!** A slot just opened up in **{self.panel_id} ({group_id})**. Go claim it now!")
-            except Exception:
-                pass
-
-        await reminders_col().delete_many({"guild_id": guild_id, "panel_id": self.panel_id, "group_id": group_id})
-
-        await interaction.response.send_message(f"✅ Your slot in **{self.panel_id} ({group_id})** has been cancelled.", ephemeral=True)
+        view = CancelSlotSelectView(self.panel_id, options)
+        await interaction.response.send_message(
+            "❌ You have slots in **multiple lobbies**. Select which to cancel:",
+            view=view,
+            ephemeral=True,
+        )
 
     async def _on_transfer(self, interaction: discord.Interaction) -> None:
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("❌ Slot transfer is restricted to Admins. Please ask staff for assistance.", ephemeral=True)
-        await interaction.response.send_message("🔄 Admin Transfer: Use `/panel transfer` to reassign a slot atomically.", ephemeral=True)
+        """Transfer Slot — Admin only, opens modal for source team + destination."""
+        if not await _check_admin(interaction):
+            return
+        from bot.views.modals import TransferSlotModal
+        await interaction.response.send_modal(
+            TransferSlotModal(self.panel_id, interaction.guild_id)
+        )
 
     async def _on_remind(self, interaction: discord.Interaction) -> None:
         from shared.database import reminders_col
@@ -690,8 +758,10 @@ class SlotManagementView(ui.View):
         )
 
     async def _on_role(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            "👥 **Role Transfer**: Mention your teammate in your group text channel to pass the slot role.", ephemeral=True,
+        """Role Transfer — opens modal, verifies same-team membership."""
+        from bot.views.modals import RoleTransferModal
+        await interaction.response.send_modal(
+            RoleTransferModal(self.panel_id, interaction.guild_id, interaction.user.id)
         )
 
 
@@ -807,3 +877,225 @@ class MultiGroupRegisterView(ui.View):
         return _callback
 
 
+# ── Choose Lobby Select View (ephemeral, non-persistent) ────────────────────
+
+class ChooseLobbySelectView(ui.View):
+    """Dropdown for selecting a lobby when player uses Choose Lobby."""
+
+    def __init__(self, panel_id: str, options: list[discord.SelectOption]) -> None:
+        super().__init__(timeout=60)
+        self.panel_id = panel_id
+        select = ui.Select(
+            placeholder="Select a lobby…",
+            options=options,
+            custom_id="choose_lobby_select",
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        group_id = interaction.data["values"][0]
+        guild_id = interaction.guild_id
+        user_id = interaction.user.id
+
+        panel = await panels_col().find_one({"guild_id": guild_id, "panel_id": self.panel_id})
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        window = panel.get("window", "8PM")
+        schedules = panel.get("schedules", [])
+        grp_sched = next((s for s in schedules if s.get("group_id") == group_id), {})
+        cap = grp_sched.get("capacity", panel.get("max_slots", 20))
+
+        filled = await registrations_col().count_documents({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": group_id,
+            "status": {"$in": ["pending", "completed"]},
+        })
+
+        if filled >= cap:
+            return await interaction.response.send_message(
+                f"❌ **{group_id}** is currently **full** ({filled}/{cap}).",
+                ephemeral=True,
+            )
+
+        # Grant tag role and create pending registration
+        role_id = panel.get("role_id")
+        if role_id:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await interaction.user.add_roles(role, reason=f"Choose Lobby → {group_id}")
+                except discord.Forbidden:
+                    pass
+
+        timeout_min = panel.get("claim_timeout_minutes", 5)
+        now = datetime.now(timezone.utc)
+        deadline = now + timedelta(minutes=timeout_min)
+
+        await registrations_col().insert_one({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": group_id,
+            "claimer_discord_id": user_id,
+            "claimed_at": now,
+            "claim_deadline": deadline,
+            "status": "pending",
+            "team_name": None,
+        })
+
+        tag_ch_id = panel.get("channel_ids", {}).get("tag_channel_id")
+        tag_mention = f"<#{tag_ch_id}>" if tag_ch_id else "the tag channel"
+
+        await interaction.response.send_message(
+            f"✅ Slot reserved for **{group_id}**! Post your team in {tag_mention} "
+            f"within **{timeout_min} minutes** to confirm.\n"
+            f"Format: `TeamName @p1 @p2 @p3 @p4`",
+            ephemeral=True,
+        )
+
+
+# ── Cancel Slot Select View (ephemeral, non-persistent) ────────────────────
+
+async def _execute_cancel(
+    interaction: discord.Interaction,
+    reg: dict,
+    panel_id: str,
+) -> None:
+    """Shared cancellation logic for single-slot or selected-slot cancel."""
+    guild_id = interaction.guild_id
+    user_id = interaction.user.id
+    group_id = reg.get("group_id", "G01")
+    window = reg.get("window", "")
+
+    panel = await panels_col().find_one({"guild_id": guild_id, "panel_id": panel_id})
+
+    # Cancel-lock check
+    if panel:
+        match_start = panel.get("match_start_time")
+        cancel_lock = panel.get("cancel_lock_minutes", 60)
+        if match_start:
+            now = datetime.now(timezone.utc)
+            time_until = (match_start - now).total_seconds() / 60
+            if time_until <= cancel_lock:
+                await interaction.response.send_message(
+                    f"❌ Cancellations are locked — match starts in under "
+                    f"**{cancel_lock} minutes**. Contact an admin.",
+                    ephemeral=True,
+                )
+                return
+
+    # Delete registration + team
+    await registrations_col().delete_one({"_id": reg["_id"]})
+    await teams_col().delete_many({
+        "guild_id": guild_id,
+        "panel_id": panel_id,
+        "window": window,
+        "group_id": group_id,
+        "owner_discord_id": user_id,
+    })
+
+    # Revoke group IDP role
+    if panel:
+        ch_ids = panel.get("channel_ids", {})
+        role_map = ch_ids.get("lobby_roles", {})
+        role_id = role_map.get(group_id)
+        if role_id:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await interaction.user.remove_roles(role, reason="Slot cancelled")
+                except discord.Forbidden:
+                    pass
+
+        # Revoke tag-access role if no other active registrations remain
+        remaining = await registrations_col().count_documents({
+            "guild_id": guild_id,
+            "panel_id": panel_id,
+            "claimer_discord_id": user_id,
+            "status": {"$in": ["pending", "completed"]},
+        })
+        if remaining == 0:
+            tag_role_id = panel.get("role_id")
+            if tag_role_id:
+                tag_role = interaction.guild.get_role(tag_role_id)
+                if tag_role:
+                    try:
+                        await interaction.user.remove_roles(tag_role, reason="All slots cancelled")
+                    except discord.Forbidden:
+                        pass
+
+    # Notify reminder subscribers
+    from shared.database import reminders_col
+    reminders = await reminders_col().find({
+        "guild_id": guild_id, "panel_id": panel_id, "group_id": group_id,
+    }).to_list(100)
+
+    for rem in reminders:
+        try:
+            user = interaction.guild.get_member(rem["user_id"])
+            if user:
+                await user.send(
+                    f"🔔 **Slot Available!** A slot just opened up in "
+                    f"**{panel_id} ({group_id})**. Go claim it now!"
+                )
+        except Exception:
+            pass
+
+    await reminders_col().delete_many({
+        "guild_id": guild_id, "panel_id": panel_id, "group_id": group_id,
+    })
+
+    # Try to respond (may already be responded to by select callback)
+    try:
+        await interaction.response.send_message(
+            f"✅ Your slot in **{panel_id} ({group_id})** has been cancelled.",
+            ephemeral=True,
+        )
+    except discord.errors.InteractionResponded:
+        await interaction.followup.send(
+            f"✅ Your slot in **{panel_id} ({group_id})** has been cancelled.",
+            ephemeral=True,
+        )
+
+    # Refresh slot board
+    bot = interaction.client
+    cog = bot.get_cog("SlotBoard")
+    if cog and hasattr(cog, "refresh_board"):
+        await cog.refresh_board(guild_id, panel_id)
+
+
+class CancelSlotSelectView(ui.View):
+    """Dropdown for selecting which lobby slot to cancel (multi-slot players)."""
+
+    def __init__(self, panel_id: str, options: list[discord.SelectOption]) -> None:
+        super().__init__(timeout=60)
+        self.panel_id = panel_id
+        select = ui.Select(
+            placeholder="Select slot to cancel…",
+            options=options,
+            custom_id="cancel_slot_select",
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        from bson import ObjectId
+        reg_id = interaction.data["values"][0]
+
+        try:
+            query = {"_id": ObjectId(reg_id)}
+        except Exception:
+            query = {"_id": reg_id}
+
+        reg = await registrations_col().find_one(query)
+        if not reg:
+            return await interaction.response.send_message(
+                "❌ Registration not found — it may have already been cancelled.",
+                ephemeral=True,
+            )
+
+        await _execute_cancel(interaction, reg, self.panel_id)

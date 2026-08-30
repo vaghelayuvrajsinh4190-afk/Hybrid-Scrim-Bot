@@ -11,6 +11,7 @@ Handles:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -20,12 +21,34 @@ from discord.ext import commands
 
 from shared.database import panels_col, registrations_col, teams_col
 from bot.utils.checks import is_banned
-from bot.utils.progress_bar import generate_segmented_bar
+from bot.utils.progress_bar import generate_segmented_bar, make_circle_bar
 
 log = logging.getLogger(__name__)
 
 # Regex to extract user IDs from mentions
 MENTION_RE = re.compile(r"<@!?(\d+)>")
+
+# ── Team Name Sanitization ─────────────────────────────────────────────────
+# Strips common conversational prefixes players add before the actual team name.
+# Examples matched (all case-insensitive):
+#   "Team name - Max Kah Wax" → "Max Kah Wax"
+#   "Our team: Alpha Squad"   → "Alpha Squad"
+#   "team - XYZ"              → "XYZ"
+#   "Team name is My Team"    → "My Team"
+TEAM_NAME_STRIP_RE = re.compile(
+    r'^(?:(?:our\s+)?team\s*(?:name)?(?:\s+is)?\s*[-:–—]?\s*)',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_team_name(raw: str) -> str:
+    """Strip conversational prefixes and clean whitespace from a team name."""
+    cleaned = TEAM_NAME_STRIP_RE.sub("", raw).strip()
+    # Also strip leading/trailing dashes, colons, hyphens
+    cleaned = cleaned.strip("-:–— ")
+    # Collapse whitespace
+    cleaned = " ".join(cleaned.split())
+    return cleaned or raw.strip()  # fallback to original if regex ate everything
 
 
 class RegistrationCog(commands.Cog, name="Registration"):
@@ -76,13 +99,24 @@ class RegistrationCog(commands.Cog, name="Registration"):
         mentioned_ids = [int(m) for m in mentions]
 
         # Remove mentions from content to extract team name
-        team_name = MENTION_RE.sub("", content).strip()
+        team_name_raw = MENTION_RE.sub("", content).strip()
         # Also remove extra whitespace
-        team_name = " ".join(team_name.split())
+        team_name_raw = " ".join(team_name_raw.split())
+
+        if not team_name_raw:
+            await message.reply(
+                "❌ Please include a **team name** along with your mentions.\n"
+                "Format: `TeamName @player1 @player2 @player3 @player4`",
+                delete_after=15,
+            )
+            return
+
+        # ── #10: Team Name Sanitization (strip common prefixes) ───────
+        team_name = _sanitize_team_name(team_name_raw)
 
         if not team_name:
             await message.reply(
-                "❌ Please include a **team name** along with your mentions.\n"
+                "❌ Could not parse a valid team name. Please try again.\n"
                 "Format: `TeamName @player1 @player2 @player3 @player4`",
                 delete_after=15,
             )
@@ -226,24 +260,26 @@ class RegistrationCog(commands.Cog, name="Registration"):
         else:
             log.warning("No conf_channel_id in panel %s channel_ids: %s", panel_id, panel.get("channel_ids", {}))
 
-        # Also notify in the group-specific lobby channel
-        lobby_map = panel.get("channel_ids", {}).get("lobby_channels", {})
-        log.info("Lobby map for panel %s: %s | Looking up group_id=%s", panel_id, lobby_map, group_id)
-        lobby_ch_id = lobby_map.get(group_id)
-        if lobby_ch_id:
-            lobby_ch = message.guild.get_channel(lobby_ch_id)
-            if lobby_ch:
-                lobby_embed = discord.Embed(
-                    title=f"📥 {team_name} — Slot {slot_label}",
-                    description=" ".join(f"<@{mid}>" for mid in mentioned_ids),
-                    colour=discord.Colour.blurple(),
-                )
-                await lobby_ch.send(embed=lobby_embed)
-                log.info("Sent lobby embed to #%s", lobby_ch.name)
-            else:
-                log.warning("Lobby channel ID %s not found in guild cache", lobby_ch_id)
-        else:
-            log.warning("No lobby channel found for group_id=%s in lobby_map=%s", group_id, lobby_map)
+        # ── #1: Auto-greeting in group channels DISABLED ──────────────
+        # (Previously sent a lobby_embed into the group channel here.
+        #  Removed to keep group channels clean — the slot board and
+        #  confirmation channel already cover this data.)
+
+        # ── #9: Assign group IDP role to message.author ONLY ──────────
+        # Do NOT iterate over message.mentions.members
+        ch_ids = panel.get("channel_ids", {})
+        role_map = ch_ids.get("lobby_roles", {})
+        group_role_id = role_map.get(group_id)
+        if group_role_id:
+            group_role = message.guild.get_role(group_role_id)
+            if group_role:
+                try:
+                    await message.author.add_roles(
+                        group_role,
+                        reason=f"Registered for {panel_id} {group_id}",
+                    )
+                except discord.Forbidden:
+                    log.warning("Cannot add group role %s to %s", group_role_id, user_id)
 
         # Revoke tag-access role
         role_id = panel.get("role_id")
@@ -257,18 +293,32 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 except discord.Forbidden:
                     pass
 
-        # Reply in tag channel
-        group_lobby_mention = f" | Lobby: <#{lobby_ch_id}>" if lobby_ch_id else ""
-        await message.reply(
+        # ── #11: Reply in tag channel + auto-delete after 15 seconds ──
+        group_lobby_mention = f" | Lobby: <#{ch_ids.get('lobby_channels', {}).get(group_id, '')}>" if ch_ids.get("lobby_channels", {}).get(group_id) else ""
+        bot_reply = await message.reply(
             f"✅ Team **{team_name}** registered in slot **{slot_label}**! "
             f"Check {f'<#{conf_ch_id}>' if conf_ch_id else 'the confirmation channel'} "
             f"for details.{group_lobby_mention}",
         )
 
-        # Refresh slot board
-        cog = self.bot.get_cog("SlotBoard")
-        if cog and hasattr(cog, "refresh_board"):
-            await cog.refresh_board(guild_id, panel_id)
+        # Schedule auto-delete for both messages after 15 seconds
+        async def _auto_delete():
+            await asyncio.sleep(15)
+            try:
+                await message.delete()
+            except Exception:
+                pass  # Already deleted or missing permissions
+            try:
+                await bot_reply.delete()
+            except Exception:
+                pass  # Already deleted or missing permissions
+
+        asyncio.create_task(_auto_delete())
+
+        # ── #2: Automatic slot board broadcast DISABLED ────────────────
+        # (Previously called cog.refresh_board() here.
+        #  Removed so the T3 Slot Board is not auto-pushed into #t3-slotmng.
+        #  Admins can still manually refresh via the SlotBoardView buttons.)
 
         # Refresh registration embed slot count + progress bar
         await self._update_reg_embed(message.guild, panel, group_id)
@@ -313,8 +363,13 @@ class RegistrationCog(commands.Cog, name="Registration"):
             })
             grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
             gcap = grp_sched.get("capacity", max_slots)
-            bar_str = make_circle_bar(gfilled, gcap)
-            group_lines.append(f"`{gid}`: {bar_str} ({gfilled}/{gcap})")
+
+            # ── #8: Progress bar using ● and ○ characters ─────────────
+            filled_clamped = min(max(gfilled, 0), gcap)
+            empty_count = gcap - filled_clamped
+            progress_bar = '●' * filled_clamped + '○' * empty_count
+
+            group_lines.append(f"`{gid}`: {progress_bar} ({gfilled}/{gcap})")
 
             m1 = grp_sched.get("m1_time", "12:00 PM")
             m2 = grp_sched.get("m2_time", "12:45 PM")
@@ -322,7 +377,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
             map2 = grp_sched.get("m2_map", "Miramar")
             new_fields.append({
                 "name": f"🎮 Lobby {gid} ({gfilled}/{gcap} Slots)",
-                "value": f"`{bar_str}` ({gfilled}/{gcap})\n• Match 1: `{m1}` ({map1})\n• Match 2: `{m2}` ({map2})",
+                "value": f"`{progress_bar}` ({gfilled}/{gcap})\n• Match 1: `{m1}` ({map1})\n• Match 2: `{m2}` ({map2})",
                 "inline": False,
             })
 
@@ -346,3 +401,4 @@ class RegistrationCog(commands.Cog, name="Registration"):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(RegistrationCog(bot))
+

@@ -483,13 +483,31 @@ class GroupsModal(ui.Modal, title="Configure Panel Groups"):
         )
 
 
-# ── Bulk Schedule Modal ───────────────────────────────────────────────────
+# ── Group Schedule Modal (replaces Bulk Schedule) ─────────────────────────
 
-class BulkScheduleModal(ui.Modal, title="Bulk Schedule Match Times"):
-    m1_time = ui.TextInput(label="Match 1 Time (e.g. 08:00 PM)", placeholder="08:00 PM", required=True)
-    m2_time = ui.TextInput(label="Match 2 Time (e.g. 08:45 PM)", placeholder="08:45 PM", required=True)
-    m1_map = ui.TextInput(label="Match 1 Map", default="Erangel", required=False)
-    m2_map = ui.TextInput(label="Match 2 Map", default="Miramar", required=False)
+class GroupScheduleModal(ui.Modal, title="Schedule Match Times (Per Group)"):
+    """Group-specific scheduling: IDP times, start times, and maps."""
+
+    group_id = ui.TextInput(
+        label="Select Group (e.g. G01, G02)",
+        placeholder="G01",
+        required=True,
+        max_length=3,
+    )
+    m1_times = ui.TextInput(
+        label="Match 1 — IDP Time | Start Time",
+        placeholder="07:30 PM | 08:00 PM",
+        required=True,
+        max_length=30,
+    )
+    m2_times = ui.TextInput(
+        label="Match 2 — IDP Time | Start Time",
+        placeholder="08:30 PM | 09:00 PM",
+        required=True,
+        max_length=30,
+    )
+    m1_map = ui.TextInput(label="Match 1 Map", default="Erangel", required=False, max_length=30)
+    m2_map = ui.TextInput(label="Match 2 Map", default="Miramar", required=False, max_length=30)
 
     def __init__(self, panel_id: str, guild_id: int) -> None:
         super().__init__()
@@ -501,17 +519,44 @@ class BulkScheduleModal(ui.Modal, title="Bulk Schedule Match Times"):
         if not panel:
             return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
-        schedules = panel.get("schedules", [])
-        m1 = self.m1_time.value.strip()
-        m2 = self.m2_time.value.strip()
+        gid = self.group_id.value.strip().upper()
+        if not gid.startswith("G") or not gid[1:].isdigit():
+            return await interaction.response.send_message(
+                "❌ Invalid group ID. Use format: `G01`, `G02`, etc.", ephemeral=True,
+            )
+
+        # Parse pipe-separated IDP|Start times
+        def _parse_times(raw: str) -> tuple[str, str]:
+            parts = [p.strip() for p in raw.split("|")]
+            if len(parts) == 2:
+                return parts[0], parts[1]
+            # Fallback: treat entire value as start time, IDP blank
+            return "", parts[0]
+
+        m1_idp, m1_start = _parse_times(self.m1_times.value)
+        m2_idp, m2_start = _parse_times(self.m2_times.value)
         map1 = self.m1_map.value.strip() or "Erangel"
         map2 = self.m2_map.value.strip() or "Miramar"
 
+        schedules = panel.get("schedules", [])
+        found = False
         for s in schedules:
-            s["m1_time"] = m1
-            s["m2_time"] = m2
-            s["m1_map"] = map1
-            s["m2_map"] = map2
+            if s.get("group_id") == gid:
+                s["m1_idp_time"] = m1_idp
+                s["m2_idp_time"] = m2_idp
+                s["m1_time"] = m1_start
+                s["m2_time"] = m2_start
+                s["m1_map"] = map1
+                s["m2_map"] = map2
+                found = True
+                break
+
+        if not found:
+            return await interaction.response.send_message(
+                f"❌ Group **{gid}** does not exist in this panel. "
+                f"Available groups: {', '.join(s.get('group_id', '?') for s in schedules)}",
+                ephemeral=True,
+            )
 
         await panels_col().update_one(
             {"guild_id": self.guild_id, "panel_id": self.panel_id},
@@ -519,8 +564,9 @@ class BulkScheduleModal(ui.Modal, title="Bulk Schedule Match Times"):
         )
 
         await interaction.response.send_message(
-            f"✅ Bulk schedule applied to all {len(schedules)} lobbies!\n"
-            f"• M1: {m1} ({map1})\n• M2: {m2} ({map2})",
+            f"✅ **{gid} Schedule Updated!**\n"
+            f"• Match 1: IDP `{m1_idp or 'N/A'}` → Start `{m1_start}` ({map1})\n"
+            f"• Match 2: IDP `{m2_idp or 'N/A'}` → Start `{m2_start}` ({map2})",
             ephemeral=True,
         )
 
@@ -619,3 +665,267 @@ class MidnightResetModal(ui.Modal, title="Midnight Scrims Reset Settings"):
         )
 
 
+# ── Transfer Slot Modal (Admin) ───────────────────────────────────────────
+
+class TransferSlotModal(ui.Modal, title="Transfer Slot (Admin)"):
+    """Admin modal: select source team and destination slot to re-assign."""
+
+    source_team = ui.TextInput(
+        label="Source Team Name (exact)",
+        placeholder="e.g. Team Alpha",
+        required=True,
+        max_length=100,
+    )
+    dest_group = ui.TextInput(
+        label="Destination Group",
+        placeholder="e.g. G01",
+        required=True,
+        max_length=3,
+    )
+    dest_slot = ui.TextInput(
+        label="Destination Slot Number",
+        placeholder="e.g. 5",
+        required=True,
+        max_length=3,
+    )
+
+    def __init__(self, panel_id: str, guild_id: int) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from shared.database import registrations_col, teams_col
+
+        team_name = self.source_team.value.strip()
+        dest_gid = self.dest_group.value.strip().upper()
+        raw_slot = self.dest_slot.value.strip()
+
+        if not raw_slot.isdigit():
+            return await interaction.response.send_message(
+                "❌ Slot number must be a number.", ephemeral=True,
+            )
+        dest_slot_num = int(raw_slot)
+
+        # Validate group exists
+        panel = await panels_col().find_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id}
+        )
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        valid_groups = [s.get("group_id") for s in panel.get("schedules", [])]
+        if dest_gid not in valid_groups:
+            return await interaction.response.send_message(
+                f"❌ Group **{dest_gid}** not found. Available: {', '.join(valid_groups)}",
+                ephemeral=True,
+            )
+
+        window = panel.get("window", "8PM")
+
+        # Find source team
+        team = await teams_col().find_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "team_name": {"$regex": f"^{team_name}$", "$options": "i"},
+        })
+        if not team:
+            return await interaction.response.send_message(
+                f"❌ Team **{team_name}** not found in this panel/window.",
+                ephemeral=True,
+            )
+
+        # Check if destination slot is occupied
+        occupant = await teams_col().find_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": dest_gid,
+            "slot_number": dest_slot_num,
+        })
+        if occupant and occupant.get("team_name", "").lower() != team_name.lower():
+            return await interaction.response.send_message(
+                f"❌ Slot {dest_slot_num} in **{dest_gid}** is occupied by "
+                f"**{occupant['team_name']}**. Free it first.",
+                ephemeral=True,
+            )
+
+        old_group = team.get("group_id", "G01")
+        new_label = f"{dest_gid}-{dest_slot_num:02d}"
+
+        # Atomically update team
+        await teams_col().update_one(
+            {"_id": team["_id"]},
+            {"$set": {
+                "group_id": dest_gid,
+                "slot_number": dest_slot_num,
+                "slot_label": new_label,
+            }},
+        )
+
+        # Update registration
+        await registrations_col().update_one(
+            {
+                "guild_id": self.guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "claimer_discord_id": team["owner_discord_id"],
+                "group_id": old_group,
+            },
+            {"$set": {
+                "group_id": dest_gid,
+                "slot_label": new_label,
+            }},
+        )
+
+        # Swap IDP roles on the owner
+        guild = interaction.guild
+        ch_ids = panel.get("channel_ids", {})
+        role_map = ch_ids.get("lobby_roles", {})
+        owner = guild.get_member(team["owner_discord_id"])
+        if owner:
+            # Remove old group role
+            old_role_id = role_map.get(old_group)
+            if old_role_id:
+                old_role = guild.get_role(old_role_id)
+                if old_role:
+                    try:
+                        await owner.remove_roles(old_role, reason="Slot transferred")
+                    except discord.Forbidden:
+                        pass
+            # Add new group role
+            new_role_id = role_map.get(dest_gid)
+            if new_role_id:
+                new_role = guild.get_role(new_role_id)
+                if new_role:
+                    try:
+                        await owner.add_roles(new_role, reason="Slot transferred")
+                    except discord.Forbidden:
+                        pass
+
+        await interaction.response.send_message(
+            f"✅ **Slot Transferred!**\n"
+            f"• Team: **{team['team_name']}**\n"
+            f"• From: `{old_group}` → To: `{dest_gid}` Slot `{dest_slot_num}`\n"
+            f"• New Label: `{new_label}`",
+            ephemeral=True,
+        )
+
+
+# ── Role Transfer Modal ───────────────────────────────────────────────────
+
+class RoleTransferModal(ui.Modal, title="Role Transfer to Teammate"):
+    """Player modal: transfer slot ownership to a registered teammate."""
+
+    target_user = ui.TextInput(
+        label="Target User ID or @mention",
+        placeholder="e.g. 123456789012345678 or @username",
+        required=True,
+        max_length=30,
+    )
+
+    def __init__(self, panel_id: str, guild_id: int, user_id: int) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        import re
+        from shared.database import registrations_col, teams_col
+
+        # Parse target user ID from mention or raw ID
+        raw = self.target_user.value.strip()
+        match = re.search(r"(\d{15,20})", raw)
+        if not match:
+            return await interaction.response.send_message(
+                "❌ Could not parse a user ID. Provide a numeric Discord ID or @mention.",
+                ephemeral=True,
+            )
+        target_id = int(match.group(1))
+
+        if target_id == self.user_id:
+            return await interaction.response.send_message(
+                "❌ You cannot transfer to yourself.", ephemeral=True,
+            )
+
+        panel = await panels_col().find_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id}
+        )
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        window = panel.get("window", "8PM")
+
+        # Find sender's team
+        team = await teams_col().find_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "owner_discord_id": self.user_id,
+        })
+        if not team:
+            return await interaction.response.send_message(
+                "❌ You don't have an active team registration to transfer.",
+                ephemeral=True,
+            )
+
+        # Verify target is on the SAME team
+        if target_id not in team.get("members", []):
+            return await interaction.response.send_message(
+                f"❌ <@{target_id}> is **not a member** of your team "
+                f"**{team['team_name']}**. Role transfer is only allowed "
+                f"within the same team.",
+                ephemeral=True,
+            )
+
+        guild = interaction.guild
+        target_member = guild.get_member(target_id)
+        if not target_member:
+            return await interaction.response.send_message(
+                f"❌ <@{target_id}> is not in this server.", ephemeral=True,
+            )
+
+        group_id = team.get("group_id", "G01")
+        ch_ids = panel.get("channel_ids", {})
+        role_map = ch_ids.get("lobby_roles", {})
+
+        # Strip role from sender, assign to target
+        role_id = role_map.get(group_id)
+        sender_member = guild.get_member(self.user_id)
+        if role_id:
+            role = guild.get_role(role_id)
+            if role:
+                if sender_member:
+                    try:
+                        await sender_member.remove_roles(role, reason="Role transfer — sender")
+                    except discord.Forbidden:
+                        pass
+                try:
+                    await target_member.add_roles(role, reason="Role transfer — receiver")
+                except discord.Forbidden:
+                    pass
+
+        # Update ownership in DB
+        await teams_col().update_one(
+            {"_id": team["_id"]},
+            {"$set": {"owner_discord_id": target_id}},
+        )
+        await registrations_col().update_one(
+            {
+                "guild_id": self.guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "claimer_discord_id": self.user_id,
+            },
+            {"$set": {"claimer_discord_id": target_id}},
+        )
+
+        await interaction.response.send_message(
+            f"✅ **Role Transferred!**\n"
+            f"• Team: **{team['team_name']}** ({group_id})\n"
+            f"• From: <@{self.user_id}> → To: <@{target_id}>\n"
+            f"• IDP/Group role reassigned.",
+            ephemeral=True,
+        )
