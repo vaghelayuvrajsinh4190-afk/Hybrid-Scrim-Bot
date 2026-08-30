@@ -48,6 +48,38 @@ class PointsTable(BaseModel):
     )
 
 
+class GroupSchedule(BaseModel):
+    """Configuration for an individual lobby / group within a panel."""
+    group_id: str = "G01"          # "G01", "G02", ...
+    m1_time: str = ""              # "12:54 PM"
+    m2_time: str = ""              # "01:34 PM"
+    m1_map: str = "Erangel"
+    m2_map: str = "Miramar"
+    capacity: int = 20
+    reserved_slots: int = 1
+    status: str = "open"           # "open" | "closed"
+
+
+class SlotReminder(BaseModel):
+    """Waitlist / reminder subscription when a lobby is full."""
+    guild_id: int
+    panel_id: str
+    group_id: str
+    user_id: int
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class MidnightResetConfig(BaseModel):
+    """Configuration for automatic daily midnight scrim wipe."""
+    enabled: bool = True
+    reset_time: str = "00:00"
+    timezone: str = "Asia/Kolkata"
+    clear_messages: bool = True
+    clear_teams: bool = True
+    clear_roles: bool = True
+    clear_points: bool = False
+
+
 class ChannelIds(BaseModel):
     """Discord channel IDs provisioned for a single panel."""
     category_id: Optional[int] = None
@@ -55,6 +87,16 @@ class ChannelIds(BaseModel):
     tag_channel_id: Optional[int] = None
     conf_channel_id: Optional[int] = None
     slotmng_channel_id: Optional[int] = None
+    admin_channel_id: Optional[int] = None
+    winner_channel_id: Optional[int] = None
+    lobby_channels: Dict[str, int] = Field(
+        default_factory=dict,
+        description="group_id (e.g. 'G01') -> text channel ID",
+    )
+    lobby_roles: Dict[str, int] = Field(
+        default_factory=dict,
+        description="group_id (e.g. 'G01') -> IDP role ID",
+    )
 
 
 # ── top-level documents ───────────────────────────────────────────────────
@@ -62,14 +104,24 @@ class PanelConfig(BaseModel):
     """One scrim panel (T1, T2, …).  Stored in ``panels`` collection."""
     guild_id: int
     panel_id: str
+    name: str = ""
     window: str
+    group_count: int = 1
+    schedules: List[GroupSchedule] = Field(default_factory=list)
+    default_reserved_slots: int = 1
+    allow_multi_group_registration: bool = False
     channel_ids: ChannelIds = Field(default_factory=ChannelIds)
     role_id: Optional[int] = None
     match_start_time: Optional[datetime] = None
+    match_duration_minutes: int = 30
     cancel_lock_minutes: int = 60
     claim_timeout_minutes: int = 5
     max_slots: int = 20
     screenshot_window_minutes: int = 30
+    ss_window_status: str = "closed"  # "closed" | "open"
+    ss_window_opened_at: Optional[datetime] = None
+    ss_window_closed_at: Optional[datetime] = None
+    midnight_reset: MidnightResetConfig = Field(default_factory=MidnightResetConfig)
     points_table: PointsTable = Field(default_factory=PointsTable)
     rename_history: Dict[str, List[float]] = Field(
         default_factory=dict,
@@ -99,6 +151,7 @@ class Team(BaseModel):
     guild_id: int
     panel_id: str
     window: str
+    group_id: str = "G01"
     owner_discord_id: int
     members: List[int] = Field(
         default_factory=list,
@@ -114,6 +167,7 @@ class Registration(BaseModel):
     guild_id: int
     panel_id: str
     window: str
+    group_id: str = "G01"
     claimer_discord_id: int
     claimed_at: datetime = Field(default_factory=_utcnow)
     claim_deadline: datetime
@@ -137,6 +191,7 @@ class Verification(BaseModel):
     guild_id: int
     panel_id: str
     window: str
+    group_id: str = "G01"
     screenshot_urls: List[str] = Field(default_factory=list)
     submitted_by: int
     submitted_at: datetime = Field(default_factory=_utcnow)
@@ -152,6 +207,7 @@ class PointEntry(BaseModel):
     guild_id: int
     panel_id: str
     window: str
+    group_id: str = "G01"
     match_number: int = 1
     kills: int = 0
     placement: int = 0

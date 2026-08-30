@@ -319,3 +319,258 @@ class ScheduleModal(ui.Modal, title="Schedule Lobby Registration"):
             ephemeral=True,
         )
 
+
+# ── Screenshot Rejection Reason Modal ──────────────────────────────────────
+
+class RejectReasonModal(ui.Modal, title="Reject Screenshot"):
+    reason = ui.TextInput(
+        label="Rejection Reason",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Incomplete scoreboard / missing team name / invalid format",
+        required=True,
+        max_length=500,
+    )
+
+    def __init__(self, verification_id: str, public_message_id: int | None = None) -> None:
+        super().__init__()
+        self._verification_id = verification_id
+        self._public_message_id = public_message_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from bson import ObjectId
+        from shared.database import verifications_col
+
+        now = datetime.now(timezone.utc)
+        try:
+            query = {"_id": ObjectId(self._verification_id), "status": "pending"}
+        except Exception:
+            query = {"_id": self._verification_id, "status": "pending"}
+
+        result = await verifications_col().update_one(
+            query,
+            {"$set": {
+                "status": "rejected",
+                "reviewed_by": interaction.user.id,
+                "reviewed_at": now,
+                "rejection_reason": self.reason.value.strip(),
+            }},
+        )
+
+        if result.modified_count == 0:
+            await interaction.response.send_message(
+                "⚠️ Screenshot was already reviewed or not found.", ephemeral=True,
+            )
+            return
+
+        # Disable buttons on thread message if possible
+        if interaction.message:
+            try:
+                for item in interaction.message.components:
+                    for child in getattr(item, "children", []):
+                        child.disabled = True
+                await interaction.message.edit(
+                    content=f"❌ **Rejected by {interaction.user.mention}**\n**Reason:** {self.reason.value.strip()}"
+                )
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"❌ Screenshot marked **Rejected**.\n**Reason:** {self.reason.value.strip()}",
+            ephemeral=True,
+        )
+
+
+# ── Groups Modal ───────────────────────────────────────────────────────────
+
+class GroupsModal(ui.Modal, title="Configure Panel Groups"):
+    group_count = ui.TextInput(
+        label="Number of Groups (1-20)",
+        placeholder="e.g. 2",
+        required=True,
+        max_length=2,
+    )
+
+    def __init__(self, panel_id: str, guild_id: int, current_count: int = 1) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+        self.group_count.default = str(current_count)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        val = self.group_count.value.strip()
+        if not val.isdigit() or not (1 <= int(val) <= 20):
+            await interaction.response.send_message(
+                "❌ Group count must be a number between 1 and 20.", ephemeral=True,
+            )
+            return
+
+        count = int(val)
+        panel = await panels_col().find_one({"guild_id": self.guild_id, "panel_id": self.panel_id})
+        schedules = panel.get("schedules", []) if panel else []
+
+        # Adjust schedules array size
+        new_schedules = []
+        for i in range(1, count + 1):
+            gid = f"G{i:02d}"
+            existing_match = next((s for s in schedules if s.get("group_id") == gid), None)
+            if existing_match:
+                new_schedules.append(existing_match)
+            else:
+                new_schedules.append({
+                    "group_id": gid,
+                    "m1_time": "12:00 PM",
+                    "m2_time": "12:45 PM",
+                    "m1_map": "Erangel",
+                    "m2_map": "Miramar",
+                    "capacity": panel.get("max_slots", 20) if panel else 20,
+                    "reserved_slots": panel.get("default_reserved_slots", 1) if panel else 1,
+                    "status": "open",
+                })
+
+        await panels_col().update_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id},
+            {"$set": {"group_count": count, "schedules": new_schedules}},
+        )
+
+        await interaction.response.send_message(
+            f"✅ Panel **{self.panel_id}** updated to **{count} Groups** (G01 to G{count:02d}).",
+            ephemeral=True,
+        )
+
+
+# ── Bulk Schedule Modal ───────────────────────────────────────────────────
+
+class BulkScheduleModal(ui.Modal, title="Bulk Schedule Match Times"):
+    m1_time = ui.TextInput(label="Match 1 Time (e.g. 08:00 PM)", placeholder="08:00 PM", required=True)
+    m2_time = ui.TextInput(label="Match 2 Time (e.g. 08:45 PM)", placeholder="08:45 PM", required=True)
+    m1_map = ui.TextInput(label="Match 1 Map", default="Erangel", required=False)
+    m2_map = ui.TextInput(label="Match 2 Map", default="Miramar", required=False)
+
+    def __init__(self, panel_id: str, guild_id: int) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        panel = await panels_col().find_one({"guild_id": self.guild_id, "panel_id": self.panel_id})
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        schedules = panel.get("schedules", [])
+        m1 = self.m1_time.value.strip()
+        m2 = self.m2_time.value.strip()
+        map1 = self.m1_map.value.strip() or "Erangel"
+        map2 = self.m2_map.value.strip() or "Miramar"
+
+        for s in schedules:
+            s["m1_time"] = m1
+            s["m2_time"] = m2
+            s["m1_map"] = map1
+            s["m2_map"] = map2
+
+        await panels_col().update_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id},
+            {"$set": {"schedules": schedules}},
+        )
+
+        await interaction.response.send_message(
+            f"✅ Bulk schedule applied to all {len(schedules)} lobbies!\n"
+            f"• M1: {m1} ({map1})\n• M2: {m2} ({map2})",
+            ephemeral=True,
+        )
+
+
+# ── Slots Config Modal ────────────────────────────────────────────────────
+
+class SlotsConfigModal(ui.Modal, title="Slots & Capacity Configuration"):
+    capacity = ui.TextInput(label="Capacity Per Lobby", default="20", required=True, max_length=3)
+    default_reserved = ui.TextInput(label="Default Reserved Slots Count", default="1", required=True, max_length=2)
+    multi_lobby = ui.TextInput(label="Multi-Lobby Registration? (yes/no)", default="no", required=True, max_length=3)
+
+    def __init__(self, panel_id: str, guild_id: int) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self.capacity.value.strip().isdigit() or not self.default_reserved.value.strip().isdigit():
+            return await interaction.response.send_message("❌ Capacity and Reserved must be numbers.", ephemeral=True)
+
+        cap = int(self.capacity.value.strip())
+        res = int(self.default_reserved.value.strip())
+        allow_multi = self.multi_lobby.value.strip().lower() in ["yes", "y", "true", "1"]
+
+        panel = await panels_col().find_one({"guild_id": self.guild_id, "panel_id": self.panel_id})
+        schedules = panel.get("schedules", []) if panel else []
+        for s in schedules:
+            s["capacity"] = cap
+            s["reserved_slots"] = res
+
+        await panels_col().update_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id},
+            {"$set": {
+                "max_slots": cap,
+                "default_reserved_slots": res,
+                "allow_multi_group_registration": allow_multi,
+                "schedules": schedules,
+            }},
+        )
+
+        await interaction.response.send_message(
+            f"✅ Slot settings saved:\n"
+            f"• Capacity: {cap} slots\n"
+            f"• Reserved: {res} slots\n"
+            f"• Multi-Lobby Registration: {'Allowed' if allow_multi else 'Disabled (1 Lobby Only)'}",
+            ephemeral=True,
+        )
+
+
+# ── Midnight Reset Modal ──────────────────────────────────────────────────
+
+class MidnightResetModal(ui.Modal, title="Midnight Scrims Reset Settings"):
+    enabled = ui.TextInput(label="Auto Midnight Reset (yes/no)", default="yes", max_length=3)
+    clear_msg = ui.TextInput(label="Purge Chat in Tag/Lobbies? (yes/no)", default="yes", max_length=3)
+    clear_tm = ui.TextInput(label="Reset Teams & Registrations? (yes/no)", default="yes", max_length=3)
+    clear_rl = ui.TextInput(label="Revoke IDP & Tag Roles? (yes/no)", default="yes", max_length=3)
+
+    def __init__(self, panel_id: str, guild_id: int, current: dict | None = None) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+        if current:
+            self.enabled.default = "yes" if current.get("enabled", True) else "no"
+            self.clear_msg.default = "yes" if current.get("clear_messages", True) else "no"
+            self.clear_tm.default = "yes" if current.get("clear_teams", True) else "no"
+            self.clear_rl.default = "yes" if current.get("clear_roles", True) else "no"
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        en = self.enabled.value.strip().lower() in ["yes", "y", "true", "1"]
+        c_msg = self.clear_msg.value.strip().lower() in ["yes", "y", "true", "1"]
+        c_tm = self.clear_tm.value.strip().lower() in ["yes", "y", "true", "1"]
+        c_rl = self.clear_rl.value.strip().lower() in ["yes", "y", "true", "1"]
+
+        cfg = {
+            "enabled": en,
+            "reset_time": "00:00",
+            "timezone": "Asia/Kolkata",
+            "clear_messages": c_msg,
+            "clear_teams": c_tm,
+            "clear_roles": c_rl,
+            "clear_points": False,
+        }
+
+        await panels_col().update_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id},
+            {"$set": {"midnight_reset": cfg}},
+        )
+
+        await interaction.response.send_message(
+            f"✅ **Midnight Reset Settings Saved for {self.panel_id}:**\n"
+            f"• Enabled: {'🟢 Yes' if en else '🔴 No'}\n"
+            f"• Purge Chat: {'Yes' if c_msg else 'No'}\n"
+            f"• Clear Teams: {'Yes' if c_tm else 'No'}\n"
+            f"• Revoke Roles: {'Yes' if c_rl else 'No'}",
+            ephemeral=True,
+        )
+
+

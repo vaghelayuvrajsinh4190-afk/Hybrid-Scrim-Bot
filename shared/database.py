@@ -77,6 +77,9 @@ def logs_col():
 def shared_channels_col():
     return get_db()["shared_channels"]
 
+def reminders_col():
+    return get_db()["reminders"]
+
 
 # ---------------------------------------------------------------------------
 # Index creation — idempotent, safe to call on every startup

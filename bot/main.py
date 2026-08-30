@@ -19,10 +19,20 @@ from shared.config import DISCORD_BOT_TOKEN, GUILD_ID
 from shared.database import close as db_close, ensure_indexes, panels_col
 
 # Views must be imported so their classes are available for add_view()
-from bot.views.persistent import AdminActionsView, ClaimSlotView, LinkIDView, PanelControlView
+from bot.views.persistent import (
+    AdminActionsView,
+    AdminControlPanelView,
+    ClaimSlotView,
+    LinkIDView,
+    MultiGroupRegisterView,
+    ScreenshotApprovalView,
+    SlotManagementView,
+)
 from bot.views.slot_views import SlotBoardView
 from bot.tasks.claim_timeout import ClaimTimeoutTask
 from bot.tasks.scheduler import scrim_scheduler, trigger_open, trigger_close
+from bot.tasks.screenshot_window import ScreenshotWindowTask
+from bot.tasks.midnight_reset import MidnightResetTask
 from bot import keep_alive
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -48,6 +58,8 @@ bot = commands.Bot(
 
 # Background tasks holder
 claim_timeout_task: ClaimTimeoutTask | None = None
+ss_window_task: ScreenshotWindowTask | None = None
+midnight_reset_task: MidnightResetTask | None = None
 
 
 # ── Schedule recovery ─────────────────────────────────────────────────────
@@ -110,7 +122,7 @@ COG_EXTENSIONS = [
 
 @bot.event
 async def on_ready() -> None:
-    global claim_timeout_task
+    global claim_timeout_task, ss_window_task, midnight_reset_task
 
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
@@ -123,9 +135,21 @@ async def on_ready() -> None:
     bot.add_view(SlotBoardView())
     bot.add_view(AdminActionsView())
 
-    # 2b. Register PanelControlView for every existing panel
-    async for panel in panels_col().find({}, {"panel_id": 1}):
-        bot.add_view(PanelControlView(bot, panel["panel_id"]))
+    # 2b. Register AdminControlPanelView, SlotManagementView,
+    #     and MultiGroupRegisterView for every existing panel
+    async for panel in panels_col().find({}, {"panel_id": 1, "group_count": 1}):
+        pid = panel["panel_id"]
+        gc = panel.get("group_count", 1)
+        bot.add_view(AdminControlPanelView(bot, pid))
+        bot.add_view(SlotManagementView(pid))
+        bot.add_view(MultiGroupRegisterView(pid, gc))
+
+    # 2c. Re-register ScreenshotApprovalView for pending verifications
+    from shared.database import verifications_col
+    pending_cursor = verifications_col().find({"status": "pending"}, {"_id": 1})
+    async for doc in pending_cursor:
+        vid = str(doc["_id"])
+        bot.add_view(ScreenshotApprovalView(vid))
 
     # 3. Load cogs
     for ext in COG_EXTENSIONS:
@@ -151,6 +175,12 @@ async def on_ready() -> None:
     claim_timeout_task = ClaimTimeoutTask(bot)
     claim_timeout_task.start()
 
+    # 5b. Screenshot window auto-open/close monitor
+    ss_window_task = ScreenshotWindowTask(bot)
+
+    # 5c. Midnight reset task
+    midnight_reset_task = MidnightResetTask(bot)
+
     # 6. Recover scheduled registration jobs and start APScheduler
     await recover_schedules()
 
@@ -161,6 +191,10 @@ async def on_ready() -> None:
 async def on_close() -> None:
     if claim_timeout_task:
         claim_timeout_task.stop()
+    if ss_window_task:
+        ss_window_task.monitor_loop.cancel()
+    if midnight_reset_task:
+        midnight_reset_task.midnight_loop.cancel()
     if scrim_scheduler.running:
         scrim_scheduler.shutdown(wait=False)
     await db_close()

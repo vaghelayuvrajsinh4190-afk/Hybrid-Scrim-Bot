@@ -3,8 +3,10 @@ Registration cog — claim → tag → confirm flow.
 
 Handles:
   - Tag submission (message listener in tag channels)
+  - Multi-group routing (G01, G02… prefixed slot numbers)
   - Duplicate-player check (Edge Case 2)
-  - Registration confirmation
+  - Registration confirmation with segmented progress bar
+  - Progress bar image generation offloaded to worker thread
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from discord.ext import commands
 
 from shared.database import panels_col, registrations_col, teams_col
 from bot.utils.checks import is_banned
+from bot.utils.progress_bar import generate_segmented_bar
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
         window = panel["window"]
         user_id = message.author.id
 
-        # Must have an active pending claim
+        # Must have an active pending claim (includes group_id if multi-group)
         reg = await registrations_col().find_one({
             "guild_id": guild_id,
             "panel_id": panel_id,
@@ -126,13 +129,24 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 return
 
         # ── Edge Case 2: Duplicate player across teams ────────────────
+        group_id = reg.get("group_id", "G01")
+
+        # Scope duplicate check to same group
         for mid in mentioned_ids:
-            dup_team = await teams_col().find_one({
+            dup_query = {
                 "guild_id": guild_id,
                 "panel_id": panel_id,
                 "window": window,
                 "members": mid,
-            })
+            }
+            # If multi-group, duplicate within same group is blocked;
+            # cross-group duplicates are allowed only if panel allows it
+            if not panel.get("allow_multi_group_registration", False):
+                pass  # global scope — dup_query already covers all groups
+            else:
+                dup_query["group_id"] = group_id  # scope to same group
+
+            dup_team = await teams_col().find_one(dup_query)
             if dup_team:
                 await message.reply(
                     f"❌ <@{mid}> is already registered on team "
@@ -142,32 +156,41 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 return
 
         # ── All checks passed — register team ─────────────────────────
-        # Assign next available slot number
+        # Assign next available slot number within this group
         max_slot_doc = await teams_col().find_one(
-            {"guild_id": guild_id, "panel_id": panel_id, "window": window},
+            {
+                "guild_id": guild_id,
+                "panel_id": panel_id,
+                "window": window,
+                "group_id": group_id,
+            },
             sort=[("slot_number", -1)],
         )
-        next_slot = (max_slot_doc["slot_number"] + 1) if max_slot_doc and max_slot_doc.get("slot_number") else 1
+        next_num = (max_slot_doc["slot_number"] + 1) if max_slot_doc and max_slot_doc.get("slot_number") else 1
+        slot_label = f"{group_id}-{next_num:02d}"  # e.g. G01-03
 
         team_doc = {
             "team_name": team_name,
             "guild_id": guild_id,
             "panel_id": panel_id,
             "window": window,
+            "group_id": group_id,
             "owner_discord_id": user_id,
             "members": mentioned_ids,
-            "slot_number": next_slot,
+            "slot_number": next_num,
+            "slot_label": slot_label,
             "registered_at": datetime.now(timezone.utc),
             "confirmed": True,
         }
         await teams_col().insert_one(team_doc)
 
-        # Update registration status
+        # Update registration status atomically
         await registrations_col().update_one(
             {"_id": reg["_id"]},
             {"$set": {
                 "status": "completed",
                 "team_name": team_name,
+                "slot_label": slot_label,
             }},
         )
 
@@ -183,7 +206,8 @@ class RegistrationCog(commands.Cog, name="Registration"):
                     timestamp=datetime.now(timezone.utc),
                 )
                 conf_embed.add_field(name="Team", value=team_name, inline=True)
-                conf_embed.add_field(name="Slot", value=f"#{next_slot}", inline=True)
+                conf_embed.add_field(name="Slot", value=slot_label, inline=True)
+                conf_embed.add_field(name="Group", value=group_id, inline=True)
                 conf_embed.add_field(name="Panel", value=panel_id, inline=True)
                 conf_embed.add_field(name="Window", value=window, inline=True)
                 conf_embed.add_field(
@@ -194,6 +218,19 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 # Include admin action buttons
                 from bot.views.persistent import AdminActionsView
                 await conf_ch.send(embed=conf_embed, view=AdminActionsView())
+
+        # Also notify in the group-specific lobby channel
+        lobby_map = panel.get("channel_ids", {}).get("lobby_channels", {})
+        lobby_ch_id = lobby_map.get(group_id)
+        if lobby_ch_id:
+            lobby_ch = message.guild.get_channel(lobby_ch_id)
+            if lobby_ch:
+                lobby_embed = discord.Embed(
+                    title=f"📥 {team_name} — Slot {slot_label}",
+                    description=" ".join(f"<@{mid}>" for mid in mentioned_ids),
+                    colour=discord.Colour.blurple(),
+                )
+                await lobby_ch.send(embed=lobby_embed)
 
         # Revoke tag-access role
         role_id = panel.get("role_id")
@@ -208,10 +245,11 @@ class RegistrationCog(commands.Cog, name="Registration"):
                     pass
 
         # Reply in tag channel
+        group_lobby_mention = f" | Lobby: <#{lobby_ch_id}>" if lobby_ch_id else ""
         await message.reply(
-            f"✅ Team **{team_name}** registered in slot **#{next_slot}**! "
+            f"✅ Team **{team_name}** registered in slot **{slot_label}**! "
             f"Check {f'<#{conf_ch_id}>' if conf_ch_id else 'the confirmation channel'} "
-            f"for details.",
+            f"for details.{group_lobby_mention}",
         )
 
         # Refresh slot board
@@ -219,13 +257,13 @@ class RegistrationCog(commands.Cog, name="Registration"):
         if cog and hasattr(cog, "refresh_board"):
             await cog.refresh_board(guild_id, panel_id)
 
-        # Refresh registration embed slot count
-        await self._update_reg_embed(message.guild, panel)
+        # Refresh registration embed slot count + progress bar
+        await self._update_reg_embed(message.guild, panel, group_id)
 
     async def _update_reg_embed(
-        self, guild: discord.Guild, panel: dict,
+        self, guild: discord.Guild, panel: dict, group_id: str | None = None,
     ) -> None:
-        """Update the registration embed to reflect current slot count."""
+        """Update the registration embed with current slot count + refreshed progress bar."""
         reg_ch_id = panel.get("channel_ids", {}).get("reg_channel_id")
         msg_id = panel.get("reg_message_id")
         if not reg_ch_id or not msg_id:
@@ -240,22 +278,45 @@ class RegistrationCog(commands.Cog, name="Registration"):
         except discord.NotFound:
             return
 
-        filled = await registrations_col().count_documents({
+        # Per-group or global capacity count
+        count_query = {
             "guild_id": panel["guild_id"],
             "panel_id": panel["panel_id"],
             "window": panel["window"],
             "status": {"$in": ["pending", "completed"]},
-        })
+        }
+        filled = await registrations_col().count_documents(count_query)
         max_slots = panel.get("max_slots", 20)
+
+        # Build per-group breakdown for embed description
+        group_count = panel.get("group_count", 1)
+        group_lines = []
+        for i in range(1, group_count + 1):
+            gid = f"G{i:02d}"
+            gfilled = await registrations_col().count_documents({
+                **count_query, "group_id": gid,
+            })
+            schedules = panel.get("schedules", [])
+            grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
+            gcap = grp_sched.get("capacity", max_slots)
+            group_lines.append(f"`{gid}`: {gfilled}/{gcap}")
+
+        groups_summary = " ┃ ".join(group_lines) if group_lines else ""
+
+        # Generate segmented progress bar image (offloaded to worker thread)
+        bar_file = await generate_segmented_bar(filled, max_slots, filename="progress.png")
 
         if msg.embeds:
             embed = msg.embeds[0]
             embed.description = (
                 f"**Window:** {panel['window']}\n"
-                f"**Slots:** {filled} / {max_slots}\n\n"
-                "Click the button below to claim a slot.\n"
+                f"**Total Slots:** {filled} / {max_slots}\n"
             )
-            await msg.edit(embed=embed)
+            if groups_summary:
+                embed.description += f"**Groups:** {groups_summary}\n"
+            embed.description += "\nClick the button below to claim a slot.\n"
+            embed.set_image(url="attachment://progress.png")
+            await msg.edit(embed=embed, attachments=[bar_file])
 
 
 async def setup(bot: commands.Bot) -> None:
