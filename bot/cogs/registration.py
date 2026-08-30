@@ -301,33 +301,49 @@ class RegistrationCog(commands.Cog, name="Registration"):
         filled = await registrations_col().count_documents(count_query)
         max_slots = panel.get("max_slots", 20)
 
-        # Build per-group breakdown for embed description
+        # Build per-group breakdown for embed description & fields
         group_count = panel.get("group_count", 1)
+        schedules = panel.get("schedules", [])
         group_lines = []
+        new_fields = []
         for i in range(1, group_count + 1):
             gid = f"G{i:02d}"
             gfilled = await registrations_col().count_documents({
                 **count_query, "group_id": gid,
             })
-            schedules = panel.get("schedules", [])
             grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
             gcap = grp_sched.get("capacity", max_slots)
-            group_lines.append(f"`{gid}`: {gfilled}/{gcap}")
+            bar_str = make_circle_bar(gfilled, gcap)
+            group_lines.append(f"`{gid}`: {bar_str} ({gfilled}/{gcap})")
 
-        groups_summary = " ┃ ".join(group_lines) if group_lines else ""
+            m1 = grp_sched.get("m1_time", "12:00 PM")
+            m2 = grp_sched.get("m2_time", "12:45 PM")
+            map1 = grp_sched.get("m1_map", "Erangel")
+            map2 = grp_sched.get("m2_map", "Miramar")
+            new_fields.append({
+                "name": f"🎮 Lobby {gid} ({gfilled}/{gcap} Slots)",
+                "value": f"`{bar_str}` ({gfilled}/{gcap})\n• Match 1: `{m1}` ({map1})\n• Match 2: `{m2}` ({map2})",
+                "inline": False,
+            })
+
+        groups_summary = "\n".join(group_lines) if group_lines else ""
 
         # Generate segmented progress bar image (offloaded to worker thread)
         bar_file = await generate_segmented_bar(filled, max_slots, filename="progress.png")
 
         if msg.embeds:
             embed = msg.embeds[0]
+            embed.clear_fields()
+            for f in new_fields:
+                embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
+
             embed.description = (
                 f"**Window:** {panel['window']}\n"
-                f"**Total Slots:** {filled} / {max_slots}\n"
+                f"**Total Slots:** {filled} / {max_slots}\n\n"
             )
             if groups_summary:
-                embed.description += f"**Groups:** {groups_summary}\n"
-            embed.description += "\nClick the button below to claim a slot.\n"
+                embed.description += f"**Live Groups:**\n{groups_summary}\n\n"
+            embed.description += "Click the button below to claim a slot.\n"
             embed.set_image(url="attachment://progress.png")
             await msg.edit(embed=embed, attachments=[bar_file])
 
