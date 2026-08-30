@@ -4,6 +4,7 @@ All Modal classes used by the bot.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ import discord
 from discord import ui
 
 from shared.database import panels_col, players_col
+from bot.utils.channel_ops import ensure_category, ensure_role, ensure_text_channel
 
 log = logging.getLogger(__name__)
 
@@ -397,18 +399,35 @@ class GroupsModal(ui.Modal, title="Configure Panel Groups"):
         self.group_count.default = str(current_count)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         val = self.group_count.value.strip()
         if not val.isdigit() or not (1 <= int(val) <= 20):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Group count must be a number between 1 and 20.", ephemeral=True,
             )
             return
 
         count = int(val)
-        panel = await panels_col().find_one({"guild_id": self.guild_id, "panel_id": self.panel_id})
-        schedules = panel.get("schedules", []) if panel else []
+        guild = interaction.guild
+        if not guild:
+            return await interaction.followup.send("❌ Guild not found.", ephemeral=True)
 
-        # Adjust schedules array size
+        panel = await panels_col().find_one({"guild_id": self.guild_id, "panel_id": self.panel_id})
+        if not panel:
+            return await interaction.followup.send("❌ Panel not found.", ephemeral=True)
+
+        upper = self.panel_id.upper()
+        schedules = panel.get("schedules", [])
+        ch_ids = panel.get("channel_ids", {})
+        cat_id = ch_ids.get("category_id")
+        category = guild.get_channel(cat_id) if cat_id else None
+        if not category:
+            category = await ensure_category(guild, upper, self.panel_id, self.guild_id)
+
+        lobby_channels = ch_ids.get("lobby_channels", {})
+        lobby_roles = ch_ids.get("lobby_roles", {})
+
+        # Adjust schedules array & dynamically create missing roles and channels
         new_schedules = []
         for i in range(1, count + 1):
             gid = f"G{i:02d}"
@@ -422,18 +441,44 @@ class GroupsModal(ui.Modal, title="Configure Panel Groups"):
                     "m2_time": "12:45 PM",
                     "m1_map": "Erangel",
                     "m2_map": "Miramar",
-                    "capacity": panel.get("max_slots", 20) if panel else 20,
-                    "reserved_slots": panel.get("default_reserved_slots", 1) if panel else 1,
+                    "capacity": panel.get("max_slots", 20),
+                    "reserved_slots": panel.get("default_reserved_slots", 1),
                     "status": "open",
                 })
 
+            # Ensure group IDP role
+            r = await ensure_role(guild, f"{upper}-{gid}", self.panel_id, self.guild_id, field_key=f"lobby_roles.{gid}")
+            lobby_roles[gid] = r.id
+
+            # Ensure lobby channel with overwrites
+            lobby_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            }
+            if r:
+                lobby_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
+
+            l_ch = await ensure_text_channel(
+                guild, f"{self.panel_id}-group-{i}", category, self.panel_id, self.guild_id,
+                field_key=f"lobby_channels.{gid}", overwrites=lobby_overwrites,
+            )
+            lobby_channels[gid] = l_ch.id
+            await asyncio.sleep(0.3)
+
         await panels_col().update_one(
             {"guild_id": self.guild_id, "panel_id": self.panel_id},
-            {"$set": {"group_count": count, "schedules": new_schedules}},
+            {"$set": {
+                "group_count": count,
+                "schedules": new_schedules,
+                "channel_ids.lobby_channels": lobby_channels,
+                "channel_ids.lobby_roles": lobby_roles,
+            }},
         )
 
-        await interaction.response.send_message(
-            f"✅ Panel **{self.panel_id}** updated to **{count} Groups** (G01 to G{count:02d}).",
+        channels_text = ", ".join(f"<#{cid}>" for cid in lobby_channels.values())
+        await interaction.followup.send(
+            f"✅ **Panel {upper} updated to {count} Groups!**\n"
+            f"• Lobbies active: {channels_text}\n"
+            f"• Click **🚀 Post to Reg Portal** in this channel to update the registration buttons for all {count} groups.",
             ephemeral=True,
         )
 
