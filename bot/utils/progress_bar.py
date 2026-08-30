@@ -74,3 +74,29 @@ async def generate_segmented_bar(
     """
     buf = await asyncio.to_thread(generate_segmented_bar_sync, filled, total)
     return discord.File(fp=buf, filename=filename)
+
+
+def make_circle_bar(
+    filled: int,
+    total: int,
+    scale_max: int = 20,
+    filled_char: str = "●",
+    empty_char: str = "○",
+) -> str:
+    """
+    Build a string like ●●●●●●●●●○ using filled (●) and empty (○)
+    characters — one per slot, scaled to the group's capacity.
+    """
+    total = max(1, total)
+    filled = max(0, min(filled, total))
+
+    if total <= scale_max:
+        bar_len = total
+        filled_count = filled
+    else:
+        bar_len = 10
+        filled_count = int(round((filled / total) * bar_len))
+        filled_count = min(filled_count, bar_len)
+
+    empty_count = max(0, bar_len - filled_count)
+    return filled_char * filled_count + empty_char * empty_count
