@@ -369,8 +369,6 @@ class RegistrationCog(commands.Cog, name="Registration"):
             empty_count = gcap - filled_clamped
             progress_bar = '●' * filled_clamped + '○' * empty_count
 
-            group_lines.append(f"`{gid}`: {progress_bar} ({gfilled}/{gcap})")
-
             m1 = grp_sched.get("m1_time", "12:00 PM")
             m2 = grp_sched.get("m2_time", "12:45 PM")
             map1 = grp_sched.get("m1_map", "Erangel")
@@ -381,8 +379,6 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 "inline": False,
             })
 
-        groups_summary = "\n".join(group_lines) if group_lines else ""
-
         if msg.embeds:
             embed = msg.embeds[0]
             embed.clear_fields()
@@ -390,12 +386,10 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
 
             embed.description = (
-                f"**Window:** {panel['window']}\n"
-                f"**Total Slots:** {filled} / {max_slots}\n\n"
+                f"Select your group below to claim a slot!\n"
+                f"After clicking, submit your team in the tag channel.\n\n"
+                f"**Window:** `{panel.get('window', '')}` | **Total Slots:** `{filled}/{max_slots}`"
             )
-            if groups_summary:
-                embed.description += f"**Live Groups:**\n{groups_summary}\n\n"
-            embed.description += "Click the button below to claim a slot.\n"
             await msg.edit(embed=embed, attachments=[])
 
 

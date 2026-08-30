@@ -150,11 +150,15 @@ class PanelCog(commands.Cog, name="Panel"):
                         "group_id": gid,
                         "status": {"$in": ["pending", "completed"]},
                     })
+                    filled_clamped = min(max(filled, 0), cap)
+                    empty_count = cap - filled_clamped
+                    progress_bar = '●' * filled_clamped + '○' * empty_count
+
                     m1 = s.get("m1_time", "12:00 PM")
                     m2 = s.get("m2_time", "12:45 PM")
                     reg_embed.add_field(
                         name=f"🎮 Lobby {gid} ({filled}/{cap} Slots)",
-                        value=f"• Match 1: `{m1}` ({s.get('m1_map', 'Erangel')})\n• Match 2: `{m2}` ({s.get('m2_map', 'Miramar')})",
+                        value=f"`{progress_bar}` ({filled}/{cap})\n• Match 1: `{m1}` ({s.get('m1_map', 'Erangel')})\n• Match 2: `{m2}` ({s.get('m2_map', 'Miramar')})",
                         inline=False,
                     )
 
