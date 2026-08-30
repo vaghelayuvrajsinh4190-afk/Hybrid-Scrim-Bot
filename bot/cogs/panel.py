@@ -166,16 +166,10 @@ class PanelCog(commands.Cog, name="Panel"):
                     {"$set": {"reg_message_id": msg.id}},
                 )
 
-        # 2. Post/Update in #T1-slotmng (Slot Board + Management Hub)
+        # 2. Post/Update in #T1-slotmng (Slot Management Hub only)
         if slotmng_ch_id:
             slotmng_ch = guild.get_channel(slotmng_ch_id)
             if slotmng_ch:
-                # 2a. Post the live Slot Board first
-                cog = self.bot.get_cog("SlotBoard")
-                if cog and hasattr(cog, "refresh_board"):
-                    await cog.refresh_board(guild.id, panel_id)
-
-                # 2b. Post the Slot Management hub buttons below
                 sm_embed = discord.Embed(
                     title=f"🎯 {upper} — Slot Management Hub",
                     description=(
@@ -320,12 +314,13 @@ class PanelCog(commands.Cog, name="Panel"):
             category = await ensure_category(guild, upper, panel_id, guild_id)
 
             # ── 2. Tag-Access & IDP Roles ─────────────────────────────
-            tag_role = await ensure_role(guild, f"{upper}-Tag-Access", panel_id, guild_id)
+            tag_role = await ensure_role(guild, f"{upper}-Tag-Access", panel_id, guild_id, field_key="role_id")
             lobby_roles = {}
             for i in range(1, groups + 1):
                 gid = f"G{i:02d}"
-                r = await ensure_role(guild, f"{upper}-{gid}", panel_id, guild_id)
+                r = await ensure_role(guild, f"{upper}-{gid}", panel_id, guild_id, field_key=f"lobby_roles.{gid}")
                 lobby_roles[gid] = r.id
+                await asyncio.sleep(0.3)
 
             # ── 3. Core Channels ──────────────────────────────────────
             tag_overwrites = {
@@ -351,8 +346,8 @@ class PanelCog(commands.Cog, name="Panel"):
             lobby_channels = {}
             for i in range(1, groups + 1):
                 gid = f"G{i:02d}"
-                role_id = lobby_roles[gid]
-                idp_role = guild.get_role(role_id)
+                role_id = lobby_roles.get(gid)
+                idp_role = guild.get_role(role_id) if role_id else None
                 lobby_overwrites = {
                     guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 }
@@ -360,8 +355,12 @@ class PanelCog(commands.Cog, name="Panel"):
                     # Visible to IDP role, but send_messages=False until match end
                     lobby_overwrites[idp_role] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
 
-                l_ch = await ensure_text_channel(guild, f"{panel_id}-group-{i}", category, panel_id, guild_id, None, overwrites=lobby_overwrites)
+                l_ch = await ensure_text_channel(
+                    guild, f"{panel_id}-group-{i}", category, panel_id, guild_id,
+                    field_key=f"lobby_channels.{gid}", overwrites=lobby_overwrites
+                )
                 lobby_channels[gid] = l_ch.id
+                await asyncio.sleep(0.3)
 
             # ── 5. Upsert Panel Document ──────────────────────────────
             panel_doc = {
