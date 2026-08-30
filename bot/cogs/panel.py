@@ -27,7 +27,14 @@ from shared.config import (
     DEFAULT_MAX_SLOTS,
     DEFAULT_SCREENSHOT_WINDOW_MINUTES,
 )
-from shared.database import panels_col, points_col, registrations_col, teams_col
+from shared.database import (
+    panels_col,
+    points_col,
+    registrations_col,
+    reminders_col,
+    teams_col,
+    verifications_col,
+)
 from shared.models import ChannelIds, MidnightResetConfig, PanelConfig, PointsTable
 
 from bot.utils.channel_ops import ensure_category, ensure_role, ensure_text_channel
@@ -507,6 +514,94 @@ class PanelCog(commands.Cog, name="Panel"):
             await interaction.response.defer(ephemeral=True)
             await self.execute_panel_reset(interaction.guild, panel_id)
             await interaction.followup.send(f"✅ Panel **{panel_id}** data has been reset.", ephemeral=True)
+
+        # ── /panel delete ─────────────────────────────────────────────
+
+        @group.command(
+            name="delete",
+            description="Completely delete a scrim panel, all its channels, roles, and database records.",
+        )
+        @app_commands.describe(panel_id="Panel ID to delete (e.g. T1, T2, T3)")
+        @admin_only()
+        async def panel_delete(interaction: discord.Interaction, panel_id: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            guild = interaction.guild
+            guild_id = guild.id
+
+            panel = await panels_col().find_one({"guild_id": guild_id, "panel_id": panel_id})
+            if not panel:
+                return await interaction.followup.send(f"❌ Panel **{panel_id}** not found in database.", ephemeral=True)
+
+            upper = panel_id.upper()
+            ch_ids = panel.get("channel_ids", {})
+            deleted_channels = 0
+            deleted_roles = 0
+
+            # 1. Delete all panel text channels
+            channel_id_list = [
+                ch_ids.get("admin_channel_id"),
+                ch_ids.get("reg_channel_id"),
+                ch_ids.get("tag_channel_id"),
+                ch_ids.get("conf_channel_id"),
+                ch_ids.get("slotmng_channel_id"),
+                ch_ids.get("winner_channel_id"),
+                *list(ch_ids.get("lobby_channels", {}).values()),
+            ]
+
+            for cid in channel_id_list:
+                if cid:
+                    ch = guild.get_channel(cid)
+                    if ch:
+                        try:
+                            await ch.delete(reason=f"Panel {upper} deleted by {interaction.user}")
+                            deleted_channels += 1
+                            await asyncio.sleep(0.3)
+                        except Exception as e:
+                            log.warning("Could not delete channel %s: %s", cid, e)
+
+            # 2. Delete Category
+            cat_id = ch_ids.get("category_id")
+            if cat_id:
+                cat = guild.get_channel(cat_id)
+                if cat:
+                    try:
+                        await cat.delete(reason=f"Panel {upper} deleted by {interaction.user}")
+                        deleted_channels += 1
+                    except Exception as e:
+                        log.warning("Could not delete category %s: %s", cat_id, e)
+
+            # 3. Delete panel roles (tag role and all lobby roles)
+            role_id_list = [
+                panel.get("role_id"),
+                *list(ch_ids.get("lobby_roles", {}).values()),
+            ]
+
+            for rid in role_id_list:
+                if rid:
+                    r = guild.get_role(rid)
+                    if r:
+                        try:
+                            await r.delete(reason=f"Panel {upper} deleted by {interaction.user}")
+                            deleted_roles += 1
+                            await asyncio.sleep(0.3)
+                        except Exception as e:
+                            log.warning("Could not delete role %s: %s", rid, e)
+
+            # 4. Wipe all database records for this panel
+            await panels_col().delete_one({"guild_id": guild_id, "panel_id": panel_id})
+            await registrations_col().delete_many({"guild_id": guild_id, "panel_id": panel_id})
+            await teams_col().delete_many({"guild_id": guild_id, "panel_id": panel_id})
+            await points_col().delete_many({"guild_id": guild_id, "panel_id": panel_id})
+            await reminders_col().delete_many({"guild_id": guild_id, "panel_id": panel_id})
+            await verifications_col().delete_many({"guild_id": guild_id, "panel_id": panel_id})
+
+            await interaction.followup.send(
+                f"🗑️ **Panel {upper} Completely Deleted!**\n"
+                f"• Deleted **{deleted_channels}** Discord channels & category\n"
+                f"• Deleted **{deleted_roles}** Discord roles\n"
+                f"• Cleared all registrations, teams, and database records.",
+                ephemeral=True,
+            )
 
     async def cog_unload(self) -> None:
         self.bot.tree.remove_command("panel", type=discord.AppCommandType.chat_input)
