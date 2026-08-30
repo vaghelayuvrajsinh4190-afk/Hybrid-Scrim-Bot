@@ -166,10 +166,16 @@ class PanelCog(commands.Cog, name="Panel"):
                     {"$set": {"reg_message_id": msg.id}},
                 )
 
-        # 2. Post/Update in #T1-slotmng
+        # 2. Post/Update in #T1-slotmng (Slot Board + Management Hub)
         if slotmng_ch_id:
             slotmng_ch = guild.get_channel(slotmng_ch_id)
             if slotmng_ch:
+                # 2a. Post the live Slot Board first
+                cog = self.bot.get_cog("SlotBoard")
+                if cog and hasattr(cog, "refresh_board"):
+                    await cog.refresh_board(guild.id, panel_id)
+
+                # 2b. Post the Slot Management hub buttons below
                 sm_embed = discord.Embed(
                     title=f"🎯 {upper} — Slot Management Hub",
                     description=(
