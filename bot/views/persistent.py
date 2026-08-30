@@ -144,6 +144,7 @@ class ClaimSlotView(ui.View):
             "guild_id": guild_id,
             "panel_id": panel_id,
             "window": window,
+            "group_id": "G01",
             "claimer_discord_id": user_id,
             "claimed_at": now,
             "claim_deadline": deadline,

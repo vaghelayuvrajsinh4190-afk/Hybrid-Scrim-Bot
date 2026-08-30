@@ -196,8 +196,10 @@ class RegistrationCog(commands.Cog, name="Registration"):
 
         # Post confirmation to conf channel
         conf_ch_id = panel.get("channel_ids", {}).get("conf_channel_id")
+        log.info("Conf channel lookup: conf_ch_id=%s", conf_ch_id)
         if conf_ch_id:
             conf_ch = message.guild.get_channel(conf_ch_id)
+            log.info("Conf channel object: %s", conf_ch)
             if conf_ch:
                 members_str = " ".join(f"<@{mid}>" for mid in mentioned_ids)
                 conf_embed = discord.Embed(
@@ -218,9 +220,15 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 # Include admin action buttons
                 from bot.views.persistent import AdminActionsView
                 await conf_ch.send(embed=conf_embed, view=AdminActionsView())
+                log.info("Sent conf embed to #%s", conf_ch.name)
+            else:
+                log.warning("Conf channel ID %s not found in guild cache", conf_ch_id)
+        else:
+            log.warning("No conf_channel_id in panel %s channel_ids: %s", panel_id, panel.get("channel_ids", {}))
 
         # Also notify in the group-specific lobby channel
         lobby_map = panel.get("channel_ids", {}).get("lobby_channels", {})
+        log.info("Lobby map for panel %s: %s | Looking up group_id=%s", panel_id, lobby_map, group_id)
         lobby_ch_id = lobby_map.get(group_id)
         if lobby_ch_id:
             lobby_ch = message.guild.get_channel(lobby_ch_id)
@@ -231,6 +239,11 @@ class RegistrationCog(commands.Cog, name="Registration"):
                     colour=discord.Colour.blurple(),
                 )
                 await lobby_ch.send(embed=lobby_embed)
+                log.info("Sent lobby embed to #%s", lobby_ch.name)
+            else:
+                log.warning("Lobby channel ID %s not found in guild cache", lobby_ch_id)
+        else:
+            log.warning("No lobby channel found for group_id=%s in lobby_map=%s", group_id, lobby_map)
 
         # Revoke tag-access role
         role_id = panel.get("role_id")
