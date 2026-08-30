@@ -79,24 +79,80 @@ async def generate_segmented_bar(
 def make_circle_bar(
     filled: int,
     total: int,
-    scale_max: int = 20,
+    bar_len: int = 10,
     filled_char: str = "●",
     empty_char: str = "○",
 ) -> str:
     """
-    Build a string like ●●●●●●●●●○ using filled (●) and empty (○)
-    characters — one per slot, scaled to the group's capacity.
+    Build a clean 10-dot circle bar (e.g. ●●●●●○○○○○) scaled to capacity.
+    Fixed 10-dot length ensures it never line-wraps on mobile screens.
     """
     total = max(1, total)
     filled = max(0, min(filled, total))
 
-    if total <= scale_max:
-        bar_len = total
-        filled_count = filled
-    else:
-        bar_len = 10
-        filled_count = int(round((filled / total) * bar_len))
-        filled_count = min(filled_count, bar_len)
+    filled_count = int(round((filled / total) * bar_len))
+    filled_count = min(max(filled_count, 0), bar_len)
+    empty_count = bar_len - filled_count
 
-    empty_count = max(0, bar_len - filled_count)
     return filled_char * filled_count + empty_char * empty_count
+
+
+def render_registration_embed(
+    panel_id: str,
+    window: str,
+    group_count: int,
+    schedules: list[dict],
+    group_fill_counts: dict[str, int],
+    max_slots: int = 20,
+) -> discord.Embed:
+    """Build the clean Tortuga/Mack-style Scrims Slot Availability Embed."""
+    from datetime import datetime, timezone
+    upper = panel_id.upper()
+    lines = []
+
+    for i in range(1, group_count + 1):
+        gid = f"G{i:02d}"
+        grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
+        cap = grp_sched.get("capacity", max_slots)
+        filled = group_fill_counts.get(gid, 0)
+
+        # Status emoji indicator
+        if filled >= cap:
+            status_icon = "🔴"
+        elif (filled / cap) >= 0.75:
+            status_icon = "🟡"
+        else:
+            status_icon = "🟢"
+
+        # 1. Group Header
+        header = f"{status_icon} **Group {gid} — {window}**"
+
+        # 2. Time line (IDP times preferred, match times as fallback)
+        m1_idp = grp_sched.get("m1_idp_time")
+        m2_idp = grp_sched.get("m2_idp_time")
+        m1_time = grp_sched.get("m1_time", "12:00 PM")
+        m2_time = grp_sched.get("m2_time", "12:45 PM")
+
+        if m1_idp and m2_idp:
+            time_line = f"⏱️ **IDP:** M1: `{m1_idp}` | M2: `{m2_idp}`"
+        elif m1_time and m2_time:
+            time_line = f"⏱️ **IDP:** M1: `{m1_time}` | M2: `{m2_time}`"
+        else:
+            time_line = "⏱️ **Schedule:** TBD"
+
+        # 3. 10-dot Progress Bar line
+        bar = make_circle_bar(filled, cap, bar_len=10)
+        fill_status = f"{filled}/{cap} filled" if filled < cap else f"{filled}/{cap} (FULL)"
+        bar_line = f"{bar} {fill_status}"
+
+        lines.append(f"{header}\n{time_line}\n{bar_line}")
+
+    embed = discord.Embed(
+        title=f"◽ {upper} SCRIMS — Slot availability",
+        description="\n\n".join(lines) if lines else "*No groups configured.*",
+        colour=discord.Colour.from_rgb(230, 100, 30),  # Tortuga Orange Strip
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"{upper} Scrims • Live Slot Tracker")
+    return embed
+

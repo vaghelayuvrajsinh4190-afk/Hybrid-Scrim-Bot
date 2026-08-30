@@ -21,7 +21,7 @@ from discord.ext import commands
 
 from shared.database import panels_col, registrations_col, teams_col
 from bot.utils.checks import is_banned
-from bot.utils.progress_bar import generate_segmented_bar, make_circle_bar
+from bot.utils.progress_bar import generate_segmented_bar, make_circle_bar, render_registration_embed
 
 log = logging.getLogger(__name__)
 
@@ -341,56 +341,36 @@ class RegistrationCog(commands.Cog, name="Registration"):
         except discord.NotFound:
             return
 
-        # Per-group or global capacity count
-        count_query = {
-            "guild_id": panel["guild_id"],
-            "panel_id": panel["panel_id"],
-            "window": panel["window"],
-            "status": {"$in": ["pending", "completed"]},
-        }
-        filled = await registrations_col().count_documents(count_query)
-        max_slots = panel.get("max_slots", 20)
-
-        # Build per-group breakdown for embed description & fields
         group_count = panel.get("group_count", 1)
         schedules = panel.get("schedules", [])
-        group_lines = []
-        new_fields = []
+        window = panel.get("window", "8PM")
+        panel_id = panel.get("panel_id", "T1")
+        max_slots = panel.get("max_slots", 20)
+
+        count_query = {
+            "guild_id": panel["guild_id"],
+            "panel_id": panel_id,
+            "window": window,
+            "status": {"$in": ["pending", "completed"]},
+        }
+
+        fill_counts = {}
         for i in range(1, group_count + 1):
             gid = f"G{i:02d}"
-            gfilled = await registrations_col().count_documents({
+            fill_counts[gid] = await registrations_col().count_documents({
                 **count_query, "group_id": gid,
             })
-            grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
-            gcap = grp_sched.get("capacity", max_slots)
 
-            # ── #8: Progress bar using ● and ○ characters ─────────────
-            filled_clamped = min(max(gfilled, 0), gcap)
-            empty_count = gcap - filled_clamped
-            progress_bar = '●' * filled_clamped + '○' * empty_count
+        embed = render_registration_embed(
+            panel_id=panel_id,
+            window=window,
+            group_count=group_count,
+            schedules=schedules,
+            group_fill_counts=fill_counts,
+            max_slots=max_slots,
+        )
 
-            m1 = grp_sched.get("m1_time", "12:00 PM")
-            m2 = grp_sched.get("m2_time", "12:45 PM")
-            map1 = grp_sched.get("m1_map", "Erangel")
-            map2 = grp_sched.get("m2_map", "Miramar")
-            new_fields.append({
-                "name": f"🎮 Lobby {gid} ({gfilled}/{gcap} Slots)",
-                "value": f"`{progress_bar}` ({gfilled}/{gcap})\n• Match 1: `{m1}` ({map1})\n• Match 2: `{m2}` ({map2})",
-                "inline": False,
-            })
-
-        if msg.embeds:
-            embed = msg.embeds[0]
-            embed.clear_fields()
-            for f in new_fields:
-                embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
-
-            embed.description = (
-                f"Select your group below to claim a slot!\n"
-                f"After clicking, submit your team in the tag channel.\n\n"
-                f"**Window:** `{panel.get('window', '')}` | **Total Slots:** `{filled}/{max_slots}`"
-            )
-            await msg.edit(embed=embed, attachments=[])
+        await msg.edit(embed=embed, attachments=[])
 
 
 async def setup(bot: commands.Bot) -> None:

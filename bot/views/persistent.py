@@ -786,6 +786,32 @@ class MultiGroupRegisterView(ui.View):
             btn.callback = self._make_callback(gid)
             self.add_item(btn)
 
+        # Set Slot Reminder button (Tortuga / Mack style)
+        remind_btn = ui.Button(
+            label="⏰ Set Slot Reminder",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"reg_remind_{panel_id}",
+        )
+        remind_btn.callback = self._on_remind_click
+        self.add_item(remind_btn)
+
+    async def _on_remind_click(self, interaction: discord.Interaction) -> None:
+        from shared.database import reminders_col
+        await reminders_col().update_one(
+            {
+                "guild_id": interaction.guild_id,
+                "panel_id": self.panel_id,
+                "group_id": "G01",
+                "user_id": interaction.user.id,
+            },
+            {"$set": {"created_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        await interaction.response.send_message(
+            f"🔔 **Reminder Set!** You will be notified as soon as any slot opens up in **{self.panel_id}**.",
+            ephemeral=True,
+        )
+
     def _make_callback(self, group_id: str):
         async def _callback(interaction: discord.Interaction) -> None:
             guild_id = interaction.guild_id

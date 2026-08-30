@@ -40,7 +40,7 @@ from shared.models import ChannelIds, MidnightResetConfig, PanelConfig, PointsTa
 from bot.utils.channel_ops import ensure_category, ensure_role, ensure_text_channel
 from bot.utils.checks import admin_only
 from bot.utils.cooldown import check_rename_allowed, record_rename
-from bot.utils.progress_bar import generate_segmented_bar
+from bot.utils.progress_bar import generate_segmented_bar, render_registration_embed
 from bot.views.modals import PanelRenameModal, PanelSettingsModal
 from bot.views.persistent import (
     AdminControlPanelView,
@@ -128,39 +128,26 @@ class PanelCog(commands.Cog, name="Panel"):
         if reg_ch_id:
             reg_ch = guild.get_channel(reg_ch_id)
             if reg_ch:
-                reg_embed = discord.Embed(
-                    title=f"🏆 {upper} Scrims Registration — {window}",
-                    description=(
-                        f"Select your group below to claim a slot!\n"
-                        f"After clicking, submit your team in the tag channel.\n\n"
-                        f"**Available Groups:** `{group_count}`"
-                    ),
-                    colour=discord.Colour.gold(),
-                    timestamp=datetime.now(timezone.utc),
-                )
-
-                # Segmented progress bars for each group
+                fill_counts = {}
                 for s in schedules:
                     gid = s.get("group_id", "G01")
-                    cap = s.get("capacity", 20)
-                    filled = await registrations_col().count_documents({
+                    count = await registrations_col().count_documents({
                         "guild_id": guild.id,
                         "panel_id": panel_id,
                         "window": window,
                         "group_id": gid,
                         "status": {"$in": ["pending", "completed"]},
                     })
-                    filled_clamped = min(max(filled, 0), cap)
-                    empty_count = cap - filled_clamped
-                    progress_bar = '●' * filled_clamped + '○' * empty_count
+                    fill_counts[gid] = count
 
-                    m1 = s.get("m1_time", "12:00 PM")
-                    m2 = s.get("m2_time", "12:45 PM")
-                    reg_embed.add_field(
-                        name=f"🎮 Lobby {gid} ({filled}/{cap} Slots)",
-                        value=f"`{progress_bar}` ({filled}/{cap})\n• Match 1: `{m1}` ({s.get('m1_map', 'Erangel')})\n• Match 2: `{m2}` ({s.get('m2_map', 'Miramar')})",
-                        inline=False,
-                    )
+                reg_embed = render_registration_embed(
+                    panel_id=panel_id,
+                    window=window,
+                    group_count=group_count,
+                    schedules=schedules,
+                    group_fill_counts=fill_counts,
+                    max_slots=panel.get("max_slots", 20),
+                )
 
                 view = MultiGroupRegisterView(panel_id=panel_id, group_count=group_count)
                 msg = await reg_ch.send(embed=reg_embed, view=view)
