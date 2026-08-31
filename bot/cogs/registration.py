@@ -140,12 +140,18 @@ class RegistrationCog(commands.Cog, name="Registration"):
             return
 
         # ── Validate: duplicate team name ─────────────────────────────
-        existing_team = await teams_col().find_one({
+        dup_team_query = {
             "guild_id": guild_id,
             "panel_id": panel_id,
             "window": window,
             "team_name": {"$regex": f"^{re.escape(team_name)}$", "$options": "i"},
-        })
+        }
+        
+        group_id = reg.get("group_id", "G01")
+        if panel.get("multi_lobby_registration", False):
+            dup_team_query["group_id"] = group_id
+            
+        existing_team = await teams_col().find_one(dup_team_query)
         if existing_team:
             await message.reply(
                 f"❌ Team name **{team_name}** is already taken in this window.",
@@ -163,8 +169,6 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 return
 
         # ── Edge Case 2: Duplicate player across teams ────────────────
-        group_id = reg.get("group_id", "G01")
-
         # Scope duplicate check to same group
         for mid in mentioned_ids:
             dup_query = {
