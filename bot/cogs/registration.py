@@ -148,7 +148,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
         }
         
         group_id = reg.get("group_id", "G01")
-        if panel.get("multi_lobby_registration", False):
+        if panel.get("group_count", 1) > 1:
             dup_team_query["group_id"] = group_id
             
         existing_team = await teams_col().find_one(dup_team_query)
