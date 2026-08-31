@@ -574,14 +574,40 @@ class GroupScheduleModal(ui.Modal, title="Schedule Match Times (Per Group)"):
 # ── Slots Config Modal ────────────────────────────────────────────────────
 
 class SlotsConfigModal(ui.Modal, title="Slots & Capacity Configuration"):
-    capacity = ui.TextInput(label="Capacity Per Lobby", default="20", required=True, max_length=3)
-    default_reserved = ui.TextInput(label="Default Reserved Slots Count", default="1", required=True, max_length=2)
-    multi_lobby = ui.TextInput(label="Multi-Lobby Registration? (yes/no)", default="no", required=True, max_length=3)
-
-    def __init__(self, panel_id: str, guild_id: int) -> None:
+    def __init__(
+        self,
+        panel_id: str,
+        guild_id: int,
+        current_capacity: int = 20,
+        current_reserved: int = 1,
+        current_multi: bool = False,
+    ) -> None:
         super().__init__()
         self.panel_id = panel_id
         self.guild_id = guild_id
+
+        self.capacity = ui.TextInput(
+            label="Capacity Per Lobby",
+            default=str(current_capacity),
+            required=True,
+            max_length=3,
+        )
+        self.default_reserved = ui.TextInput(
+            label="Default Reserved Slots Count",
+            default=str(current_reserved),
+            required=True,
+            max_length=2,
+        )
+        self.multi_lobby = ui.TextInput(
+            label="Multi-Lobby Registration? (yes/no)",
+            default="yes" if current_multi else "no",
+            required=True,
+            max_length=3,
+        )
+
+        self.add_item(self.capacity)
+        self.add_item(self.default_reserved)
+        self.add_item(self.multi_lobby)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not self.capacity.value.strip().isdigit() or not self.default_reserved.value.strip().isdigit():
@@ -610,7 +636,7 @@ class SlotsConfigModal(ui.Modal, title="Slots & Capacity Configuration"):
         await interaction.response.send_message(
             f"✅ Slot settings saved:\n"
             f"• Capacity: {cap} slots\n"
-            f"• Reserved: {res} slots\n"
+            f"• Reserved: {res} slots (Public: {max(0, cap - res)} slots)\n"
             f"• Multi-Lobby Registration: {'Allowed' if allow_multi else 'Disabled (1 Lobby Only)'}",
             ephemeral=True,
         )

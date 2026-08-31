@@ -140,16 +140,14 @@ class RegistrationCog(commands.Cog, name="Registration"):
             return
 
         # ── Validate: duplicate team name ─────────────────────────────
+        group_id = reg.get("group_id", "G01")
         dup_team_query = {
             "guild_id": guild_id,
             "panel_id": panel_id,
             "window": window,
+            "group_id": group_id,
             "team_name": {"$regex": f"^{re.escape(team_name)}$", "$options": "i"},
         }
-        
-        group_id = reg.get("group_id", "G01")
-        if panel.get("group_count", 1) > 1:
-            dup_team_query["group_id"] = group_id
             
         existing_team = await teams_col().find_one(dup_team_query)
         if existing_team:
@@ -194,18 +192,46 @@ class RegistrationCog(commands.Cog, name="Registration"):
                 return
 
         # ── All checks passed — register team ─────────────────────────
-        # Assign next available slot number within this group
-        max_slot_doc = await teams_col().find_one(
-            {
+        # Determine schedule & reserved slots boundaries
+        schedules = panel.get("schedules", [])
+        grp_sched = next((s for s in schedules if s.get("group_id") == group_id), {})
+        cap = grp_sched.get("capacity", panel.get("max_slots", 20))
+        reserved_count = grp_sched.get("reserved_slots", panel.get("default_reserved_slots", 0))
+
+        # 1. Use pre-allocated slot from claim if present and above reserved boundary
+        next_num = reg.get("slot_number")
+        if not next_num or next_num <= reserved_count:
+            # Recompute next available unreserved public slot
+            existing_teams = await teams_col().find({
                 "guild_id": guild_id,
                 "panel_id": panel_id,
                 "window": window,
                 "group_id": group_id,
-            },
-            sort=[("slot_number", -1)],
-        )
-        next_num = (max_slot_doc["slot_number"] + 1) if max_slot_doc and max_slot_doc.get("slot_number") else 1
-        slot_label = f"{group_id}-{next_num:02d}"  # e.g. G01-03
+            }).to_list(cap)
+            taken_slots = {t.get("slot_number") for t in existing_teams if t.get("slot_number")}
+
+            # Public slots strictly start from reserved_count + 1
+            next_num = None
+            for s_num in range(reserved_count + 1, cap + 1):
+                if s_num not in taken_slots:
+                    next_num = s_num
+                    break
+
+            if next_num is None:
+                # Fallback: ensure strictly above reserved_count
+                max_slot_doc = await teams_col().find_one(
+                    {
+                        "guild_id": guild_id,
+                        "panel_id": panel_id,
+                        "window": window,
+                        "group_id": group_id,
+                    },
+                    sort=[("slot_number", -1)],
+                )
+                max_curr = max_slot_doc["slot_number"] if max_slot_doc and max_slot_doc.get("slot_number") else reserved_count
+                next_num = max(reserved_count + 1, max_curr + 1)
+
+        slot_label = f"{group_id}-{next_num:02d}"  # e.g. G01-05
 
         team_doc = {
             "team_name": team_name,
@@ -228,6 +254,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
             {"$set": {
                 "status": "completed",
                 "team_name": team_name,
+                "slot_number": next_num,
                 "slot_label": slot_label,
             }},
         )

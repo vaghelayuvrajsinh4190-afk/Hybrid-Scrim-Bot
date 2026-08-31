@@ -487,8 +487,12 @@ class AdminControlPanelView(ui.View):
     async def _on_slots(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        panel = await panels_col().find_one({"guild_id": interaction.guild_id, "panel_id": self.panel_id})
+        cap = panel.get("max_slots", 20) if panel else 20
+        res = panel.get("default_reserved_slots", 1) if panel else 1
+        multi = panel.get("allow_multi_group_registration", False) if panel else False
         from bot.views.modals import SlotsConfigModal
-        await interaction.response.send_modal(SlotsConfigModal(self.panel_id, interaction.guild_id))
+        await interaction.response.send_modal(SlotsConfigModal(self.panel_id, interaction.guild_id, cap, res, multi))
 
     async def _on_prov(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
@@ -1084,6 +1088,7 @@ class MultiGroupRegisterView(ui.View):
             timeout_min = panel.get("claim_timeout_minutes", 5)
             now = datetime.now(timezone.utc)
             deadline = now + timedelta(minutes=timeout_min)
+            slot_label = f"{group_id}-{next_slot:02d}"
 
             await registrations_col().insert_one({
                 "guild_id": guild_id,
@@ -1096,6 +1101,7 @@ class MultiGroupRegisterView(ui.View):
                 "status": "pending",
                 "team_name": None,
                 "slot_number": next_slot,
+                "slot_label": slot_label,
             })
 
             tag_ch_id = panel.get("channel_ids", {}).get("tag_channel_id")

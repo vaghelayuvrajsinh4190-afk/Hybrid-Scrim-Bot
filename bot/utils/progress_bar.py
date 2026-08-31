@@ -126,12 +126,14 @@ def render_registration_embed(
         group_display = gid if gid.lower().startswith("group") else f"Group {gid}"
 
         cap = grp_sched.get("capacity", max_slots)
+        res_count = grp_sched.get("reserved_slots", 0)
+        public_cap = max(1, cap - res_count)
         filled = group_fill_counts.get(gid, 0)
 
         # Status emoji indicator
-        if filled >= cap:
+        if filled >= public_cap:
             status_icon = "🔴"
-        elif (filled / cap) >= 0.75:
+        elif (filled / public_cap) >= 0.75:
             status_icon = "🟡"
         else:
             status_icon = "🟢"
@@ -152,9 +154,10 @@ def render_registration_embed(
         else:
             time_line = "⌚ **IDP:** M1: `TBD` | M2: `TBD`"
 
-        # 3. 10-dot Progress Bar line in rounded code box (`●●●oooooooo` 3/20 filled)
-        bar = make_circle_bar(filled, cap, bar_len=10, filled_char="●", empty_char="o")
-        fill_status = f"{filled}/{cap} filled" if filled < cap else f"{filled}/{cap} (FULL)"
+        # 3. 10-dot Progress Bar line in rounded code box (`●●●oooooooo` 1/16 filled • 4 Reserved)
+        bar = make_circle_bar(filled, public_cap, bar_len=10, filled_char="●", empty_char="o")
+        res_text = f" • `{res_count} Reserved`" if res_count > 0 else ""
+        fill_status = f"{filled}/{public_cap} filled{res_text}" if filled < public_cap else f"{filled}/{public_cap} (FULL){res_text}"
         bar_line = f"`{bar}` {fill_status}"
 
         lines.append(f"{header}\n{time_line}\n{bar_line}")
