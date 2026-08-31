@@ -86,7 +86,7 @@ class SlotBoardCog(commands.Cog, name="SlotBoard"):
         # Circle progress bar
         filled_count = len(filled_slots)
         circle_bar = make_circle_bar(filled_count, max_slots, bar_len=10)
-        bar_line = f"\n{circle_bar}  {filled_count}/{max_slots} filled"
+        bar_line = f"\n`{circle_bar}`  {filled_count}/{max_slots} filled"
 
         description = "\n".join(lines) if lines else "*No slots available.*"
         description += f"\n{bar_line}"

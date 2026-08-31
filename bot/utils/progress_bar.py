@@ -146,16 +146,16 @@ def render_registration_embed(
         m2_time = grp_sched.get("m2_time", "12:45 PM")
 
         if m1_idp and m2_idp:
-            time_line = f"⏱️ IDP: M1: `{m1_idp}` | M2: `{m2_idp}`"
+            time_line = f"⌚ **IDP:** M1: `{m1_idp}` | M2: `{m2_idp}`"
         elif m1_time and m2_time:
-            time_line = f"⏱️ IDP: M1: `{m1_time}` | M2: `{m2_time}`"
+            time_line = f"⌚ **IDP:** M1: `{m1_time}` | M2: `{m2_time}`"
         else:
-            time_line = "⏱️ IDP: M1: `TBD` | M2: `TBD`"
+            time_line = "⌚ **IDP:** M1: `TBD` | M2: `TBD`"
 
-        # 3. 10-dot Progress Bar line (●●●oooooooo 3/20 filled)
+        # 3. 10-dot Progress Bar line in rounded code box (`●●●oooooooo` 3/20 filled)
         bar = make_circle_bar(filled, cap, bar_len=10, filled_char="●", empty_char="o")
         fill_status = f"{filled}/{cap} filled" if filled < cap else f"{filled}/{cap} (FULL)"
-        bar_line = f"{bar} {fill_status}"
+        bar_line = f"`{bar}` {fill_status}"
 
         lines.append(f"{header}\n{time_line}\n{bar_line}")
 
