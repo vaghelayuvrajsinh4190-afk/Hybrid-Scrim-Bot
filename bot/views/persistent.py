@@ -790,7 +790,7 @@ class SlotManagementView(ui.View):
         self.add_item(btn_role)
 
     async def _on_switch(self, interaction: discord.Interaction) -> None:
-        """Choose Lobby — conditional logic based on multi-lobby setting."""
+        """Choose Lobby — allows selecting a lobby or switching from current lobby."""
         guild_id = interaction.guild_id
         user_id = interaction.user.id
 
@@ -801,27 +801,19 @@ class SlotManagementView(ui.View):
             return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
         window = panel.get("window", "8PM")
-        allow_multi = panel.get("allow_multi_group_registration", False)
 
-        # Check if user already has a slot
-        existing = await registrations_col().find_one({
+        # Find user's current registrations in this panel/window
+        existing_regs = await registrations_col().find({
             "guild_id": guild_id,
             "panel_id": self.panel_id,
             "window": window,
             "claimer_discord_id": user_id,
             "status": {"$in": ["pending", "completed"]},
-        })
+        }).to_list(25)
+        user_groups = {r.get("group_id") for r in existing_regs}
 
-        if existing and not allow_multi:
-            return await interaction.response.send_message(
-                "❌ You already have a slot in this window. "
-                "Use **❌ Cancel Slot** first, then re-register for a different lobby.",
-                ephemeral=True,
-            )
-
-        # No slot or multi-lobby ON — show group selection dropdown
+        # Show group selection dropdown
         schedules = panel.get("schedules", [])
-        # Only show open groups
         open_schedules = [s for s in schedules if s.get("status", "open") == "open"]
         if not open_schedules:
             return await interaction.response.send_message("❌ No open groups available for this panel.", ephemeral=True)
@@ -837,16 +829,20 @@ class SlotManagementView(ui.View):
                 "group_id": gid,
                 "status": {"$in": ["pending", "completed"]},
             })
-            status = "FULL" if filled >= cap else f"{filled}/{cap}"
+            is_current = gid in user_groups
+            status_text = "📍 CURRENT" if is_current else ("FULL" if filled >= cap else f"{filled}/{cap}")
+            desc = "Your current lobby" if is_current else f"M1: {s.get('m1_time', 'TBD')} | M2: {s.get('m2_time', 'TBD')}"
             options.append(discord.SelectOption(
-                label=f"Lobby {gid} ({status})",
+                label=f"Lobby {gid} ({status_text})",
                 value=gid,
-                description=f"M1: {s.get('m1_time', 'TBD')} | M2: {s.get('m2_time', 'TBD')}",
+                description=desc,
+                emoji="📍" if is_current else ("🔴" if filled >= cap else "🟢"),
             ))
 
         view = ChooseLobbySelectView(self.panel_id, options)
+        current_msg = f" (Currently in **{', '.join(user_groups)}**)" if user_groups else ""
         await interaction.response.send_message(
-            "🔀 **Select a lobby** to register for:",
+            f"🔀 **Select a lobby** to switch to or register for{current_msg}:",
             view=view,
             ephemeral=True,
         )
@@ -1140,6 +1136,21 @@ class ChooseLobbySelectView(ui.View):
                 f"❌ **{group_id}** is currently **closed** for registration.", ephemeral=True,
             )
 
+        # Check if user already has an active slot in this exact group
+        existing_in_group = await registrations_col().find_one({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": group_id,
+            "claimer_discord_id": user_id,
+            "status": {"$in": ["pending", "completed"]},
+        })
+        if existing_in_group:
+            return await interaction.response.send_message(
+                f"❌ You already have a slot in **{group_id}**! Please select a different lobby if you wish to switch.",
+                ephemeral=True,
+            )
+
         cap = grp_sched.get("capacity", panel.get("max_slots", 20))
         reserved_count = grp_sched.get("reserved_slots", panel.get("default_reserved_slots", 0))
 
@@ -1177,17 +1188,124 @@ class ChooseLobbySelectView(ui.View):
                 f"❌ No open public slots available in **{group_id}**.", ephemeral=True,
             )
 
-        # Grant tag role and create pending registration
+        timeout_min = panel.get("claim_timeout_minutes", 5)
+        new_slot_label = f"{group_id}-{next_slot:02d}"
+        guild = interaction.guild
+        ch_ids = panel.get("channel_ids", {})
+        role_map = ch_ids.get("lobby_roles", {})
+
+        # Check if user has an existing slot in ANOTHER group (Switch flow)
+        old_reg = await registrations_col().find_one({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "claimer_discord_id": user_id,
+            "status": {"$in": ["pending", "completed"]},
+        })
+
+        if old_reg:
+            old_group = old_reg.get("group_id", "G01")
+
+            # 1. Update team record if already registered
+            old_team = await teams_col().find_one({
+                "guild_id": guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "group_id": old_group,
+                "owner_discord_id": user_id,
+            })
+            if old_team:
+                await teams_col().update_one(
+                    {"_id": old_team["_id"]},
+                    {"$set": {
+                        "group_id": group_id,
+                        "slot_number": next_slot,
+                        "slot_label": new_slot_label,
+                    }},
+                )
+
+            # 2. Update registration document
+            await registrations_col().update_one(
+                {"_id": old_reg["_id"]},
+                {"$set": {
+                    "group_id": group_id,
+                    "slot_number": next_slot,
+                    "slot_label": new_slot_label,
+                }},
+            )
+
+            # 3. Swap IDP roles on the user
+            if guild:
+                member = guild.get_member(user_id)
+                if member:
+                    old_role_id = role_map.get(old_group)
+                    if old_role_id:
+                        old_r = guild.get_role(old_role_id)
+                        if old_r:
+                            try:
+                                await member.remove_roles(old_r, reason=f"Switched lobby from {old_group}")
+                            except discord.Forbidden:
+                                pass
+                    new_role_id = role_map.get(group_id)
+                    if new_role_id:
+                        new_r = guild.get_role(new_role_id)
+                        if new_r:
+                            try:
+                                await member.add_roles(new_r, reason=f"Switched lobby to {group_id}")
+                            except discord.Forbidden:
+                                pass
+
+            # 4. Notify waitlisted players for the freed slot in old_group
+            from shared.database import reminders_col
+            old_reminders = await reminders_col().find({
+                "guild_id": guild_id, "panel_id": self.panel_id, "group_id": old_group,
+            }).to_list(100)
+            for rem in old_reminders:
+                try:
+                    u = guild.get_member(rem["user_id"])
+                    if u:
+                        await u.send(f"🔔 **Slot Available!** A slot just opened up in **{self.panel_id} ({old_group})**!")
+                except Exception:
+                    pass
+            await reminders_col().delete_many({
+                "guild_id": guild_id, "panel_id": self.panel_id, "group_id": old_group,
+            })
+
+            # 5. Refresh slotboard
+            bot = interaction.client
+            sb_cog = bot.get_cog("SlotBoard")
+            if sb_cog and hasattr(sb_cog, "refresh_board"):
+                await sb_cog.refresh_board(guild_id, self.panel_id)
+
+            team_name = old_reg.get("team_name")
+            new_role_id = role_map.get(group_id)
+            role_mention = f"<@&{new_role_id}>" if new_role_id else f"**{group_id}**"
+            if team_name:
+                return await interaction.response.send_message(
+                    f"✅ **Lobby Switched Successfully!**\n"
+                    f"• Team: **{team_name}**\n"
+                    f"• Moved: **{old_group}** ➡️ **{group_id}** (Slot **#{next_slot}** — `{new_slot_label}`)\n"
+                    f"• IDP role updated to {role_mention}.",
+                    ephemeral=True,
+                )
+            else:
+                return await interaction.response.send_message(
+                    f"✅ **Lobby Reservation Switched!**\n"
+                    f"• Moved: **{old_group}** ➡️ **{group_id}** (Slot **#{next_slot}** — `{new_slot_label}`)\n"
+                    f"• Post your team in the tag channel within **{timeout_min} minutes** to confirm.",
+                    ephemeral=True,
+                )
+
+        # ── Fresh claim flow (User had no slot yet) ──────────────────────
         role_id = panel.get("role_id")
-        if role_id:
-            role = interaction.guild.get_role(role_id)
+        if role_id and guild:
+            role = guild.get_role(role_id)
             if role:
                 try:
                     await interaction.user.add_roles(role, reason=f"Choose Lobby → {group_id}")
                 except discord.Forbidden:
                     pass
 
-        timeout_min = panel.get("claim_timeout_minutes", 5)
         now = datetime.now(timezone.utc)
         deadline = now + timedelta(minutes=timeout_min)
 
@@ -1202,6 +1320,7 @@ class ChooseLobbySelectView(ui.View):
             "status": "pending",
             "team_name": None,
             "slot_number": next_slot,
+            "slot_label": new_slot_label,
         })
 
         tag_ch_id = panel.get("channel_ids", {}).get("tag_channel_id")
