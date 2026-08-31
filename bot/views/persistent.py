@@ -1048,6 +1048,15 @@ class MultiGroupRegisterView(ui.View):
                 "group_id": group_id,
             }).to_list(cap)
             taken_slots = {t.get("slot_number") for t in existing_teams if t.get("slot_number")}
+            
+            pending_regs = await registrations_col().find({
+                "guild_id": guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "group_id": group_id,
+                "status": "pending",
+            }).to_list(cap)
+            taken_slots.update({r.get("slot_number") for r in pending_regs if r.get("slot_number")})
 
             # Public slots start after reserved slots
             next_slot = None
@@ -1176,6 +1185,15 @@ class ChooseLobbySelectView(ui.View):
             "group_id": group_id,
         }).to_list(cap)
         taken_slots = {t.get("slot_number") for t in existing_teams if t.get("slot_number")}
+
+        pending_regs = await registrations_col().find({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": group_id,
+            "status": "pending",
+        }).to_list(cap)
+        taken_slots.update({r.get("slot_number") for r in pending_regs if r.get("slot_number")})
 
         next_slot = None
         for s_num in range(reserved_count + 1, cap + 1):

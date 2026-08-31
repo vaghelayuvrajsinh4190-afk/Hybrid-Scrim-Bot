@@ -53,40 +53,69 @@ class SlotBoardCog(commands.Cog, name="SlotBoard"):
             "guild_id": guild_id,
             "panel_id": panel_id,
             "window": window,
-        }).sort("slot_number", 1).to_list(length=max_slots)
+        }).sort("slot_number", 1).to_list(length=400) # Increased length for multi-group
 
-        # Build slot lines
-        lines = []
-        filled_slots = {}
-        for team in teams:
-            slot_num = team.get("slot_number", "?")
-            filled_slots[slot_num] = team
+        group_count = panel.get("group_count", 1)
+        
+        if group_count > 1:
+            # Multi-group summary
+            lines = []
+            total_filled = 0
+            total_cap = 0
+            
+            for sched in schedules:
+                gid = sched.get("group_id", "G01")
+                cap = sched.get("capacity", max_slots)
+                status = sched.get("status", "open")
+                
+                count = sum(1 for t in teams if t.get("group_id") == gid)
+                total_filled += count
+                total_cap += cap
+                
+                status_icon = "🟢" if status == "open" else "🔴"
+                filled_text = f"{count}/{cap} filled"
+                if count >= cap:
+                    filled_text = "FULL"
+                    status_icon = "🔴"
+                    
+                lines.append(f"{status_icon} **{gid}**: {filled_text}")
+                
+            filled_count = total_filled
+            max_slots = total_cap
+            circle_bar = make_circle_bar(filled_count, max_slots, bar_len=10)
+            bar_line = f"\n`{circle_bar}`  {filled_count}/{max_slots} filled total"
+        else:
+            # Single-group slot board
+            lines = []
+            filled_slots = {}
+            for team in teams:
+                slot_num = team.get("slot_number", "?")
+                filled_slots[slot_num] = team
 
-        for i in range(1, max_slots + 1):
-            if i in filled_slots:
-                team = filled_slots[i]
-                members = " ".join(f"<@{m}>" for m in team.get("members", []))
-                is_reserved = team.get("is_reserved", False)
-                if is_reserved:
-                    # Admin-assigned reserved slot
-                    lines.append(
-                        f"`{i:>2}.` 🛡️ **{team['team_name']}** — {members}"
-                    )
+            for i in range(1, max_slots + 1):
+                if i in filled_slots:
+                    team = filled_slots[i]
+                    members = " ".join(f"<@{m}>" for m in team.get("members", []))
+                    is_reserved = team.get("is_reserved", False)
+                    if is_reserved:
+                        # Admin-assigned reserved slot
+                        lines.append(
+                            f"`{i:>2}.` 🛡️ **{team['team_name']}** — {members}"
+                        )
+                    else:
+                        status = "✅" if team.get("confirmed") else "⏳"
+                        lines.append(
+                            f"`{i:>2}.` {status} **{team['team_name']}** — {members}"
+                        )
+                elif i <= default_reserved:
+                    # Unassigned reserved slot
+                    lines.append(f"`{i:>2}.` 🛡️ *Reserved*")
                 else:
-                    status = "✅" if team.get("confirmed") else "⏳"
-                    lines.append(
-                        f"`{i:>2}.` {status} **{team['team_name']}** — {members}"
-                    )
-            elif i <= default_reserved:
-                # Unassigned reserved slot
-                lines.append(f"`{i:>2}.` 🛡️ *Reserved*")
-            else:
-                lines.append(f"`{i:>2}.` 🔓 *Open*")
+                    lines.append(f"`{i:>2}.` 🔓 *Open*")
 
-        # Circle progress bar
-        filled_count = len(filled_slots)
-        circle_bar = make_circle_bar(filled_count, max_slots, bar_len=10)
-        bar_line = f"\n`{circle_bar}`  {filled_count}/{max_slots} filled"
+            filled_count = len(filled_slots)
+            circle_bar = make_circle_bar(filled_count, max_slots, bar_len=10)
+            bar_line = f"\n`{circle_bar}`  {filled_count}/{max_slots} filled"
 
         description = "\n".join(lines) if lines else "*No slots available.*"
         description += f"\n{bar_line}"
