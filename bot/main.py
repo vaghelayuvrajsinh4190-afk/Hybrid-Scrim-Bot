@@ -202,6 +202,8 @@ async def on_close() -> None:
 
 # ── Run ────────────────────────────────────────────────────────────────────
 def main() -> None:
+    import time
+
     if not DISCORD_BOT_TOKEN:
         log.error("DISCORD_BOT_TOKEN is not set — aborting.")
         sys.exit(1)
@@ -209,7 +211,16 @@ def main() -> None:
     # Start keep-alive HTTP server for Render (daemon thread, non-blocking)
     keep_alive.start()
 
-    bot.run(DISCORD_BOT_TOKEN, log_handler=None)
+    while True:
+        try:
+            bot.run(DISCORD_BOT_TOKEN, log_handler=None)
+            break
+        except discord.errors.HTTPException as exc:
+            if getattr(exc, "status", None) == 429:
+                log.warning("Discord API returned 429 (Rate Limited / Temporary IP Block). Waiting 60 seconds before retrying...")
+                time.sleep(60)
+            else:
+                raise
 
 
 if __name__ == "__main__":
