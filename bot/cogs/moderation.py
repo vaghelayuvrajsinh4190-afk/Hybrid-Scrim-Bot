@@ -31,20 +31,23 @@ class Moderation(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="clear", description="Remove a specified number of messages from the channel.")
-    @app_commands.describe(amount="The number of messages to delete (default: 100)")
+    @app_commands.describe(amount="The number of messages to delete (default: 100, max: 100)")
     @admin_only()
-    async def clear_messages(self, interaction: discord.Interaction, amount: int = 100) -> None:
+    async def clear_messages(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100] = 100) -> None:
         """Purge messages from the current channel."""
         await interaction.response.defer(ephemeral=True)
         try:
-            # We add +1 because the user's slash command invocation itself isn't a normal message,
-            # but standard purge logic just takes the limit.
-            deleted = await interaction.channel.purge(limit=amount)
-            await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral=True)
+            # Prevent deleting messages older than 14 days to avoid 429 rate limits
+            fourteen_days_ago = discord.utils.utcnow() - timedelta(days=14)
+            def is_recent(m):
+                return m.created_at > fourteen_days_ago
+
+            deleted = await interaction.channel.purge(limit=amount, check=is_recent, bulk=True)
+            await interaction.followup.send(f"✅ Deleted {len(deleted)} recent messages.", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ I do not have permission to manage messages in this channel.", ephemeral=True)
         except discord.HTTPException:
-            await interaction.followup.send("❌ Failed to delete messages. Messages older than 14 days cannot be bulk deleted.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to delete messages.", ephemeral=True)
 
     async def _log_action(
         self,
