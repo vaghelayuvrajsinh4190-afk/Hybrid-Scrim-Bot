@@ -81,11 +81,12 @@ def make_circle_bar(
     total: int,
     bar_len: int = 10,
     filled_char: str = "●",
-    empty_char: str = "○",
+    empty_char: str = "o",
 ) -> str:
     """
-    Build a clean 10-dot circle bar (e.g. ●●●●●○○○○○) scaled to capacity.
+    Build a clean 10-dot circle bar (e.g. ●●●oooooooo) scaled to capacity.
     Fixed 10-dot length ensures it never line-wraps on mobile screens.
+    Uses 'o' for empty slots to create small, crisp hollow circles matching Tortuga style.
     """
     total = max(1, total)
     filled = max(0, min(filled, total))
@@ -105,14 +106,25 @@ def render_registration_embed(
     group_fill_counts: dict[str, int],
     max_slots: int = 20,
 ) -> discord.Embed:
-    """Build the clean Tortuga/Mack-style Scrims Slot Availability Embed."""
+    """Build the clean Tortuga/Mack-style Scrims Slot Availability Embed matching Image 2."""
     from datetime import datetime, timezone
+
     upper = panel_id.upper()
+    tier_label = f"TIER {panel_id[1:]}" if (panel_id.upper().startswith("T") and panel_id[1:].isdigit()) else upper
+
     lines = []
 
-    for i in range(1, group_count + 1):
-        gid = f"G{i:02d}"
-        grp_sched = next((s for s in schedules if s.get("group_id") == gid), {})
+    # If schedules provided, iterate over open schedules; else fallback to 1..group_count
+    if schedules:
+        target_schedules = [s for s in schedules if s.get("status", "open") == "open"]
+    else:
+        target_schedules = [{"group_id": f"G{i:02d}"} for i in range(1, group_count + 1)]
+
+    for grp_sched in target_schedules:
+        gid = grp_sched.get("group_id", "G01")
+        # Format display group name nicely (e.g. "Group 1839" or "Group G01" or "Group 1")
+        group_display = gid if gid.lower().startswith("group") else f"Group {gid}"
+
         cap = grp_sched.get("capacity", max_slots)
         filled = group_fill_counts.get(gid, 0)
 
@@ -124,8 +136,8 @@ def render_registration_embed(
         else:
             status_icon = "🟢"
 
-        # 1. Group Header
-        header = f"{status_icon} **Group {gid} — {window}**"
+        # 1. Group Header (e.g. 🟢 Group 1839 — 1st SEPT or 🟢 Group G01 — 8PM)
+        header = f"{status_icon} **{group_display} — {window}**"
 
         # 2. Time line (IDP times preferred, match times as fallback)
         m1_idp = grp_sched.get("m1_idp_time")
@@ -134,25 +146,25 @@ def render_registration_embed(
         m2_time = grp_sched.get("m2_time", "12:45 PM")
 
         if m1_idp and m2_idp:
-            time_line = f"⏱️ **IDP:** M1: `{m1_idp}` | M2: `{m2_idp}`"
+            time_line = f"⏱️ IDP: M1: `{m1_idp}` | M2: `{m2_idp}`"
         elif m1_time and m2_time:
-            time_line = f"⏱️ **IDP:** M1: `{m1_time}` | M2: `{m2_time}`"
+            time_line = f"⏱️ IDP: M1: `{m1_time}` | M2: `{m2_time}`"
         else:
-            time_line = "⏱️ **Schedule:** TBD"
+            time_line = "⏱️ IDP: M1: `TBD` | M2: `TBD`"
 
-        # 3. 10-dot Progress Bar line
-        bar = make_circle_bar(filled, cap, bar_len=10)
+        # 3. 10-dot Progress Bar line (●●●oooooooo 3/20 filled)
+        bar = make_circle_bar(filled, cap, bar_len=10, filled_char="●", empty_char="o")
         fill_status = f"{filled}/{cap} filled" if filled < cap else f"{filled}/{cap} (FULL)"
         bar_line = f"{bar} {fill_status}"
 
         lines.append(f"{header}\n{time_line}\n{bar_line}")
 
     embed = discord.Embed(
-        title=f"◽ {upper} SCRIMS — Slot availability",
+        title=f"🦅 {tier_label} SCRIMS — Slot availability",
         description="\n\n".join(lines) if lines else "*No groups configured.*",
         colour=discord.Colour.from_rgb(230, 100, 30),  # Tortuga Orange Strip
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text=f"{upper} Scrims • Live Slot Tracker")
+    embed.set_footer(text=f"Auto-updates on every registration event • {tier_label} SCRIMS")
     return embed
 

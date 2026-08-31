@@ -355,8 +355,8 @@ class RegistrationCog(commands.Cog, name="Registration"):
         }
 
         fill_counts = {}
-        for i in range(1, group_count + 1):
-            gid = f"G{i:02d}"
+        for s in schedules:
+            gid = s.get("group_id", "G01")
             fill_counts[gid] = await registrations_col().count_documents({
                 **count_query, "group_id": gid,
             })
@@ -364,7 +364,7 @@ class RegistrationCog(commands.Cog, name="Registration"):
         embed = render_registration_embed(
             panel_id=panel_id,
             window=window,
-            group_count=group_count,
+            group_count=len(schedules),
             schedules=schedules,
             group_fill_counts=fill_counts,
             max_slots=max_slots,
