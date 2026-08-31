@@ -440,6 +440,10 @@ class AdminControlPanelView(ui.View):
         btn_midnight = ui.Button(label="⚙️ Midnight Reset", style=discord.ButtonStyle.secondary, custom_id=f"acp_midnight_{panel_id}", row=2)
         btn_instant_reset = ui.Button(label="⚡ Instant Reset", style=discord.ButtonStyle.danger, custom_id=f"acp_instant_reset_{panel_id}", row=2)
 
+        # Row 3: Group & Slot Management
+        btn_manage_groups = ui.Button(label="🗂️ Manage Groups", style=discord.ButtonStyle.primary, custom_id=f"acp_mng_grps_{panel_id}", row=3)
+        btn_assign_reserved = ui.Button(label="🛡️ Assign Reserved", style=discord.ButtonStyle.success, custom_id=f"acp_assign_res_{panel_id}", row=3)
+
         btn_groups.callback = self._on_groups
         btn_sched.callback = self._on_sched
         btn_slots.callback = self._on_slots
@@ -450,6 +454,8 @@ class AdminControlPanelView(ui.View):
         btn_ss_close.callback = self._on_ss_close
         btn_midnight.callback = self._on_midnight
         btn_instant_reset.callback = self._on_instant_reset
+        btn_manage_groups.callback = self._on_manage_groups
+        btn_assign_reserved.callback = self._on_assign_reserved
 
         self.add_item(btn_groups)
         self.add_item(btn_sched)
@@ -461,6 +467,8 @@ class AdminControlPanelView(ui.View):
         self.add_item(btn_ss_close)
         self.add_item(btn_midnight)
         self.add_item(btn_instant_reset)
+        self.add_item(btn_manage_groups)
+        self.add_item(btn_assign_reserved)
 
     async def _on_groups(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
@@ -601,6 +609,156 @@ class AdminControlPanelView(ui.View):
         else:
             await interaction.response.send_message("Instant reset executed.", ephemeral=True)
 
+    async def _on_manage_groups(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        panel = await panels_col().find_one({"guild_id": interaction.guild_id, "panel_id": self.panel_id})
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        schedules = panel.get("schedules", [])
+        if not schedules:
+            return await interaction.response.send_message("❌ No groups configured.", ephemeral=True)
+
+        options = []
+        for s in schedules:
+            gid = s.get("group_id", "G01")
+            status = s.get("status", "open")
+            status_icon = "🟢" if status == "open" else "🔴"
+            cap = s.get("capacity", 20)
+            options.append(discord.SelectOption(
+                label=f"{status_icon} {gid} ({status.upper()})",
+                value=gid,
+                description=f"Capacity: {cap} | M1: {s.get('m1_time', 'TBD')} | M2: {s.get('m2_time', 'TBD')}",
+            ))
+
+        view = ManageGroupsView(self.bot, self.panel_id, options)
+        await interaction.response.send_message(
+            "🗂️ **Manage Groups** — Select groups to close or delete:\n"
+            "• **Close** = hide from registration, keep data\n"
+            "• **Delete** = remove channels, roles, and all data permanently",
+            view=view,
+            ephemeral=True,
+        )
+
+    async def _on_assign_reserved(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        from bot.views.modals import AssignReservedSlotModal
+        await interaction.response.send_modal(
+            AssignReservedSlotModal(self.panel_id, interaction.guild_id)
+        )
+
+
+# ── Manage Groups View (ephemeral, admin-only) ─────────────────────────────
+
+class ManageGroupsView(ui.View):
+    """Admin view with a multi-select dropdown for groups + Close/Delete action buttons."""
+
+    def __init__(self, bot, panel_id: str, options: list[discord.SelectOption]) -> None:
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.panel_id = panel_id
+        self.selected_groups: list[str] = []
+
+        select = ui.Select(
+            placeholder="Select groups to manage…",
+            options=options,
+            min_values=1,
+            max_values=len(options),
+            custom_id="manage_groups_select",
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+        btn_close = ui.Button(label="🔴 Close Selected", style=discord.ButtonStyle.secondary, custom_id="mng_grp_close", row=1)
+        btn_reopen = ui.Button(label="🟢 Reopen Selected", style=discord.ButtonStyle.success, custom_id="mng_grp_reopen", row=1)
+        btn_delete = ui.Button(label="🗑️ Delete Selected", style=discord.ButtonStyle.danger, custom_id="mng_grp_delete", row=1)
+
+        btn_close.callback = self._on_close
+        btn_reopen.callback = self._on_reopen
+        btn_delete.callback = self._on_delete
+
+        self.add_item(btn_close)
+        self.add_item(btn_reopen)
+        self.add_item(btn_delete)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        self.selected_groups = interaction.data.get("values", [])
+        await interaction.response.send_message(
+            f"✅ Selected: **{', '.join(self.selected_groups)}**. Now click an action button.",
+            ephemeral=True,
+        )
+
+    async def _on_close(self, interaction: discord.Interaction) -> None:
+        if not self.selected_groups:
+            return await interaction.response.send_message("❌ Select groups first.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        cog = self.bot.get_cog("Panel")
+        if cog and hasattr(cog, "close_specific_groups"):
+            result = await cog.close_specific_groups(interaction.guild, self.panel_id, self.selected_groups)
+            await interaction.followup.send(result, ephemeral=True)
+        else:
+            # Fallback: update directly
+            panel = await panels_col().find_one({"guild_id": interaction.guild_id, "panel_id": self.panel_id})
+            if panel:
+                schedules = panel.get("schedules", [])
+                for s in schedules:
+                    if s.get("group_id") in self.selected_groups:
+                        s["status"] = "closed"
+                await panels_col().update_one(
+                    {"guild_id": interaction.guild_id, "panel_id": self.panel_id},
+                    {"$set": {"schedules": schedules}},
+                )
+            await interaction.followup.send(
+                f"🔴 Groups **{', '.join(self.selected_groups)}** have been **closed**.\n"
+                f"They will no longer appear in the registration portal.",
+                ephemeral=True,
+            )
+
+    async def _on_reopen(self, interaction: discord.Interaction) -> None:
+        if not self.selected_groups:
+            return await interaction.response.send_message("❌ Select groups first.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        panel = await panels_col().find_one({"guild_id": interaction.guild_id, "panel_id": self.panel_id})
+        if panel:
+            schedules = panel.get("schedules", [])
+            reopened = []
+            for s in schedules:
+                if s.get("group_id") in self.selected_groups and s.get("status") == "closed":
+                    s["status"] = "open"
+                    reopened.append(s["group_id"])
+            await panels_col().update_one(
+                {"guild_id": interaction.guild_id, "panel_id": self.panel_id},
+                {"$set": {"schedules": schedules}},
+            )
+            if reopened:
+                await interaction.followup.send(
+                    f"🟢 Groups **{', '.join(reopened)}** have been **reopened**.\n"
+                    f"Click **🚀 Post to Reg Portal** to update the registration embed.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    "ℹ️ No closed groups found among the selected groups.",
+                    ephemeral=True,
+                )
+        else:
+            await interaction.followup.send("❌ Panel not found.", ephemeral=True)
+
+    async def _on_delete(self, interaction: discord.Interaction) -> None:
+        if not self.selected_groups:
+            return await interaction.response.send_message("❌ Select groups first.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        cog = self.bot.get_cog("Panel")
+        if cog and hasattr(cog, "delete_specific_groups"):
+            result = await cog.delete_specific_groups(interaction.guild, self.panel_id, self.selected_groups)
+            await interaction.followup.send(result, ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Delete handler not available.", ephemeral=True)
 
 # ── Slot Management View (#T1-slotmng) ─────────────────────────────────────
 
@@ -663,11 +821,13 @@ class SlotManagementView(ui.View):
 
         # No slot or multi-lobby ON — show group selection dropdown
         schedules = panel.get("schedules", [])
-        if not schedules:
-            return await interaction.response.send_message("❌ No groups configured for this panel.", ephemeral=True)
+        # Only show open groups
+        open_schedules = [s for s in schedules if s.get("status", "open") == "open"]
+        if not open_schedules:
+            return await interaction.response.send_message("❌ No open groups available for this panel.", ephemeral=True)
 
         options = []
-        for s in schedules:
+        for s in open_schedules:
             gid = s.get("group_id", "G01")
             cap = s.get("capacity", 20)
             filled = await registrations_col().count_documents({
@@ -772,19 +932,32 @@ class MultiGroupRegisterView(ui.View):
     Public registration view with Register button for each group.
     """
 
-    def __init__(self, panel_id: str, group_count: int = 1) -> None:
+    def __init__(self, panel_id: str, group_count: int = 1, open_schedules: list[dict] | None = None) -> None:
         super().__init__(timeout=None)
         self.panel_id = panel_id
 
-        for i in range(1, min(group_count + 1, 21)):
-            gid = f"G{i:02d}"
-            btn = ui.Button(
-                label=f"📥 Register {gid}",
-                style=discord.ButtonStyle.success if i % 2 != 0 else discord.ButtonStyle.primary,
-                custom_id=f"reg_btn_{panel_id}_{gid}",
-            )
-            btn.callback = self._make_callback(gid)
-            self.add_item(btn)
+        if open_schedules:
+            # Use actual open schedules — only creates buttons for open groups
+            for idx, s in enumerate(open_schedules[:20]):
+                gid = s.get("group_id", f"G{idx+1:02d}")
+                btn = ui.Button(
+                    label=f"📥 Register {gid}",
+                    style=discord.ButtonStyle.success if idx % 2 == 0 else discord.ButtonStyle.primary,
+                    custom_id=f"reg_btn_{panel_id}_{gid}",
+                )
+                btn.callback = self._make_callback(gid)
+                self.add_item(btn)
+        else:
+            # Fallback: sequential G01..GN (legacy behavior)
+            for i in range(1, min(group_count + 1, 21)):
+                gid = f"G{i:02d}"
+                btn = ui.Button(
+                    label=f"📥 Register {gid}",
+                    style=discord.ButtonStyle.success if i % 2 != 0 else discord.ButtonStyle.primary,
+                    custom_id=f"reg_btn_{panel_id}_{gid}",
+                )
+                btn.callback = self._make_callback(gid)
+                self.add_item(btn)
 
         # Set Slot Reminder button (Tortuga / Mack style)
         remind_btn = ui.Button(
@@ -827,6 +1000,14 @@ class MultiGroupRegisterView(ui.View):
             window = panel.get("window", "8PM")
             allow_multi = panel.get("allow_multi_group_registration", False)
 
+            # Check if group is closed
+            schedules = panel.get("schedules", [])
+            grp_sched = next((s for s in schedules if s.get("group_id") == group_id), {})
+            if grp_sched.get("status") == "closed":
+                return await interaction.response.send_message(
+                    f"❌ **{group_id}** is currently **closed** for registration.", ephemeral=True,
+                )
+
             # Check existing registration
             query = {
                 "guild_id": guild_id,
@@ -854,14 +1035,34 @@ class MultiGroupRegisterView(ui.View):
                 "status": {"$in": ["pending", "completed"]},
             })
 
-            schedules = panel.get("schedules", [])
-            grp_sched = next((s for s in schedules if s.get("group_id") == group_id), {})
             cap = grp_sched.get("capacity", panel.get("max_slots", 20))
+            reserved_count = grp_sched.get("reserved_slots", panel.get("default_reserved_slots", 0))
 
             if filled >= cap:
                 return await interaction.response.send_message(
                     f"❌ **{group_id}** is currently full ({filled}/{cap}). Click 🔔 Reminders in slot management to get notified upon cancellations!",
                     ephemeral=True,
+                )
+
+            # Compute next available slot number (skip reserved slots)
+            existing_teams = await teams_col().find({
+                "guild_id": guild_id,
+                "panel_id": self.panel_id,
+                "window": window,
+                "group_id": group_id,
+            }).to_list(cap)
+            taken_slots = {t.get("slot_number") for t in existing_teams if t.get("slot_number")}
+
+            # Public slots start after reserved slots
+            next_slot = None
+            for s_num in range(reserved_count + 1, cap + 1):
+                if s_num not in taken_slots:
+                    next_slot = s_num
+                    break
+
+            if next_slot is None:
+                return await interaction.response.send_message(
+                    f"❌ No open public slots available in **{group_id}**.", ephemeral=True,
                 )
 
             # Grant temp tag role
@@ -874,7 +1075,7 @@ class MultiGroupRegisterView(ui.View):
                     except discord.Forbidden:
                         pass
 
-            # Create Registration document
+            # Create Registration document with computed slot number
             timeout_min = panel.get("claim_timeout_minutes", 5)
             now = datetime.now(timezone.utc)
             deadline = now + timedelta(minutes=timeout_min)
@@ -889,6 +1090,7 @@ class MultiGroupRegisterView(ui.View):
                 "claim_deadline": deadline,
                 "status": "pending",
                 "team_name": None,
+                "slot_number": next_slot,
             })
 
             tag_ch_id = panel.get("channel_ids", {}).get("tag_channel_id")
@@ -931,7 +1133,15 @@ class ChooseLobbySelectView(ui.View):
         window = panel.get("window", "8PM")
         schedules = panel.get("schedules", [])
         grp_sched = next((s for s in schedules if s.get("group_id") == group_id), {})
+
+        # Check if group is closed
+        if grp_sched.get("status") == "closed":
+            return await interaction.response.send_message(
+                f"❌ **{group_id}** is currently **closed** for registration.", ephemeral=True,
+            )
+
         cap = grp_sched.get("capacity", panel.get("max_slots", 20))
+        reserved_count = grp_sched.get("reserved_slots", panel.get("default_reserved_slots", 0))
 
         filled = await registrations_col().count_documents({
             "guild_id": guild_id,
@@ -945,6 +1155,26 @@ class ChooseLobbySelectView(ui.View):
             return await interaction.response.send_message(
                 f"❌ **{group_id}** is currently **full** ({filled}/{cap}).",
                 ephemeral=True,
+            )
+
+        # Compute next available slot number (skip reserved slots)
+        existing_teams = await teams_col().find({
+            "guild_id": guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": group_id,
+        }).to_list(cap)
+        taken_slots = {t.get("slot_number") for t in existing_teams if t.get("slot_number")}
+
+        next_slot = None
+        for s_num in range(reserved_count + 1, cap + 1):
+            if s_num not in taken_slots:
+                next_slot = s_num
+                break
+
+        if next_slot is None:
+            return await interaction.response.send_message(
+                f"❌ No open public slots available in **{group_id}**.", ephemeral=True,
             )
 
         # Grant tag role and create pending registration
@@ -971,13 +1201,14 @@ class ChooseLobbySelectView(ui.View):
             "claim_deadline": deadline,
             "status": "pending",
             "team_name": None,
+            "slot_number": next_slot,
         })
 
         tag_ch_id = panel.get("channel_ids", {}).get("tag_channel_id")
         tag_mention = f"<#{tag_ch_id}>" if tag_ch_id else "the tag channel"
 
         await interaction.response.send_message(
-            f"✅ Slot reserved for **{group_id}**! Post your team in {tag_mention} "
+            f"✅ Slot **#{next_slot}** reserved for **{group_id}**! Post your team in {tag_mention} "
             f"within **{timeout_min} minutes** to confirm.\n"
             f"Format: `TeamName @p1 @p2 @p3 @p4`",
             ephemeral=True,

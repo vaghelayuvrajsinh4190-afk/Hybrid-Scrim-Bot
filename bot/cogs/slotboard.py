@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 
 from shared.database import panels_col, registrations_col, teams_col
+from bot.utils.progress_bar import make_circle_bar
 from bot.views.slot_views import SlotBoardView
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ class SlotBoardCog(commands.Cog, name="SlotBoard"):
 
         window = panel["window"]
         max_slots = panel.get("max_slots", 20)
+        schedules = panel.get("schedules", [])
+
+        # Determine reserved slots count (use first schedule or default)
+        default_reserved = panel.get("default_reserved_slots", 0)
 
         # Fetch all teams for this panel+window
         teams = await teams_col().find({
@@ -52,31 +57,48 @@ class SlotBoardCog(commands.Cog, name="SlotBoard"):
 
         # Build slot lines
         lines = []
-        filled_slots = set()
+        filled_slots = {}
         for team in teams:
             slot_num = team.get("slot_number", "?")
-            filled_slots.add(slot_num)
-            members = " ".join(f"<@{m}>" for m in team.get("members", []))
-            status = "✅" if team.get("confirmed") else "⏳"
-            lines.append(
-                f"`{slot_num:>2}.` {status} **{team['team_name']}** — {members}"
-            )
+            filled_slots[slot_num] = team
 
-        # Add open slots
         for i in range(1, max_slots + 1):
-            if i not in filled_slots:
+            if i in filled_slots:
+                team = filled_slots[i]
+                members = " ".join(f"<@{m}>" for m in team.get("members", []))
+                is_reserved = team.get("is_reserved", False)
+                if is_reserved:
+                    # Admin-assigned reserved slot
+                    lines.append(
+                        f"`{i:>2}.` 🛡️ **{team['team_name']}** — {members}"
+                    )
+                else:
+                    status = "✅" if team.get("confirmed") else "⏳"
+                    lines.append(
+                        f"`{i:>2}.` {status} **{team['team_name']}** — {members}"
+                    )
+            elif i <= default_reserved:
+                # Unassigned reserved slot
+                lines.append(f"`{i:>2}.` 🛡️ *Reserved*")
+            else:
                 lines.append(f"`{i:>2}.` 🔓 *Open*")
 
-        lines.sort(key=lambda l: int(l.split(".")[0].strip("`")))
+        # Circle progress bar
+        filled_count = len(filled_slots)
+        circle_bar = make_circle_bar(filled_count, max_slots, bar_len=10)
+        bar_line = f"\n{circle_bar}  {filled_count}/{max_slots} filled"
+
+        description = "\n".join(lines) if lines else "*No slots available.*"
+        description += f"\n{bar_line}"
 
         embed = discord.Embed(
             title=f"📋 {panel_id.upper()} — Slot Board",
-            description="\n".join(lines) if lines else "*No slots available.*",
+            description=description,
             colour=discord.Colour.blue(),
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(
-            text=f"Window: {window} | {len(teams)}/{max_slots} filled"
+            text=f"Window: {window} | {filled_count}/{max_slots} filled"
         )
 
         # Match start info

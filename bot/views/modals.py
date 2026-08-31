@@ -929,3 +929,129 @@ class RoleTransferModal(ui.Modal, title="Role Transfer to Teammate"):
             f"• IDP/Group role reassigned.",
             ephemeral=True,
         )
+
+
+# ── Assign Reserved Slot Modal (Admin) ─────────────────────────────────────
+
+class AssignReservedSlotModal(ui.Modal, title="Assign Reserved Slot"):
+    """Admin modal: assign a team to a reserved slot (slots 1..reserved_count)."""
+
+    group_id = ui.TextInput(
+        label="Group (e.g. G01)",
+        placeholder="G01",
+        required=True,
+        max_length=3,
+    )
+    slot_number = ui.TextInput(
+        label="Reserved Slot Number",
+        placeholder="e.g. 1, 2, 3",
+        required=True,
+        max_length=3,
+    )
+    team_name = ui.TextInput(
+        label="Team Name",
+        placeholder="e.g. Team Alpha",
+        required=True,
+        max_length=100,
+    )
+
+    def __init__(self, panel_id: str, guild_id: int) -> None:
+        super().__init__()
+        self.panel_id = panel_id
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from shared.database import registrations_col, teams_col
+
+        gid = self.group_id.value.strip().upper()
+        raw_slot = self.slot_number.value.strip()
+        t_name = self.team_name.value.strip()
+
+        if not raw_slot.isdigit():
+            return await interaction.response.send_message(
+                "❌ Slot number must be a number.", ephemeral=True,
+            )
+        slot_num = int(raw_slot)
+
+        # Validate panel and group
+        panel = await panels_col().find_one(
+            {"guild_id": self.guild_id, "panel_id": self.panel_id}
+        )
+        if not panel:
+            return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
+
+        schedules = panel.get("schedules", [])
+        grp_sched = next((s for s in schedules if s.get("group_id") == gid), None)
+        if not grp_sched:
+            valid_groups = [s.get("group_id") for s in schedules]
+            return await interaction.response.send_message(
+                f"❌ Group **{gid}** not found. Available: {', '.join(valid_groups)}",
+                ephemeral=True,
+            )
+
+        reserved_count = grp_sched.get("reserved_slots", panel.get("default_reserved_slots", 0))
+        if slot_num < 1 or slot_num > reserved_count:
+            return await interaction.response.send_message(
+                f"❌ Slot **{slot_num}** is not a reserved slot. "
+                f"Reserved slots for {gid}: 1 to {reserved_count}.",
+                ephemeral=True,
+            )
+
+        window = panel.get("window", "8PM")
+
+        # Check if slot is already occupied
+        occupant = await teams_col().find_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": gid,
+            "slot_number": slot_num,
+        })
+        if occupant:
+            return await interaction.response.send_message(
+                f"❌ Slot {slot_num} in **{gid}** is already assigned to "
+                f"**{occupant['team_name']}**.",
+                ephemeral=True,
+            )
+
+        # Create the reserved team record
+        now = datetime.now(timezone.utc)
+        slot_label = f"{gid}-{slot_num:02d}"
+
+        await teams_col().insert_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": gid,
+            "team_name": t_name,
+            "owner_discord_id": interaction.user.id,
+            "members": [],
+            "slot_number": slot_num,
+            "slot_label": slot_label,
+            "registered_at": now,
+            "confirmed": True,
+            "is_reserved": True,
+        })
+
+        # Create a matching registration record
+        await registrations_col().insert_one({
+            "guild_id": self.guild_id,
+            "panel_id": self.panel_id,
+            "window": window,
+            "group_id": gid,
+            "claimer_discord_id": interaction.user.id,
+            "claimed_at": now,
+            "claim_deadline": now,
+            "status": "completed",
+            "team_name": t_name,
+            "slot_label": slot_label,
+            "is_reserved": True,
+        })
+
+        await interaction.response.send_message(
+            f"✅ **Reserved Slot Assigned!**\n"
+            f"• Group: **{gid}** → Slot **{slot_num}**\n"
+            f"• Team: **{t_name}**\n"
+            f"• Label: `{slot_label}`",
+            ephemeral=True,
+        )

@@ -128,8 +128,12 @@ class PanelCog(commands.Cog, name="Panel"):
         if reg_ch_id:
             reg_ch = guild.get_channel(reg_ch_id)
             if reg_ch:
+                # Filter to only open groups
+                open_schedules = [s for s in schedules if s.get("status", "open") == "open"]
+                open_group_count = len(open_schedules)
+
                 fill_counts = {}
-                for s in schedules:
+                for s in open_schedules:
                     gid = s.get("group_id", "G01")
                     count = await registrations_col().count_documents({
                         "guild_id": guild.id,
@@ -143,13 +147,17 @@ class PanelCog(commands.Cog, name="Panel"):
                 reg_embed = render_registration_embed(
                     panel_id=panel_id,
                     window=window,
-                    group_count=group_count,
-                    schedules=schedules,
+                    group_count=open_group_count,
+                    schedules=open_schedules,
                     group_fill_counts=fill_counts,
                     max_slots=panel.get("max_slots", 20),
                 )
 
-                view = MultiGroupRegisterView(panel_id=panel_id, group_count=group_count)
+                view = MultiGroupRegisterView(
+                    panel_id=panel_id,
+                    group_count=open_group_count,
+                    open_schedules=open_schedules,
+                )
                 msg = await reg_ch.send(embed=reg_embed, view=view)
                 await panels_col().update_one(
                     {"_id": panel["_id"]},
@@ -174,6 +182,113 @@ class PanelCog(commands.Cog, name="Panel"):
                 )
                 sm_embed.set_footer(text=f"Panel {upper}")
                 await slotmng_ch.send(embed=sm_embed, view=SlotManagementView(panel_id=panel_id))
+
+    async def close_specific_groups(
+        self, guild: discord.Guild, panel_id: str, group_ids: list[str],
+    ) -> str:
+        """Close specific groups — hides them from registration but keeps data."""
+        panel = await panels_col().find_one({"guild_id": guild.id, "panel_id": panel_id})
+        if not panel:
+            return "❌ Panel not found."
+
+        schedules = panel.get("schedules", [])
+        closed = []
+        for s in schedules:
+            if s.get("group_id") in group_ids:
+                s["status"] = "closed"
+                closed.append(s["group_id"])
+
+        await panels_col().update_one(
+            {"guild_id": guild.id, "panel_id": panel_id},
+            {"$set": {"schedules": schedules}},
+        )
+
+        if closed:
+            return (
+                f"🔴 Groups **{', '.join(closed)}** have been **closed**.\n"
+                f"They will no longer appear in the registration portal.\n"
+                f"Click **🚀 Post to Reg Portal** to update the registration embed."
+            )
+        return "ℹ️ No matching groups found to close."
+
+    async def delete_specific_groups(
+        self, guild: discord.Guild, panel_id: str, group_ids: list[str],
+    ) -> str:
+        """Permanently delete specific groups: channels, roles, schedules, registrations, teams."""
+        panel = await panels_col().find_one({"guild_id": guild.id, "panel_id": panel_id})
+        if not panel:
+            return "❌ Panel not found."
+
+        upper = panel_id.upper()
+        ch_ids = panel.get("channel_ids", {})
+        lobby_channels = ch_ids.get("lobby_channels", {})
+        lobby_roles = ch_ids.get("lobby_roles", {})
+        schedules = panel.get("schedules", [])
+        window = panel.get("window", "8PM")
+
+        deleted_channels = 0
+        deleted_roles = 0
+        deleted_groups = []
+
+        for gid in group_ids:
+            # Delete lobby channel
+            ch_id = lobby_channels.pop(gid, None)
+            if ch_id:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        await ch.delete(reason=f"Group {gid} deleted from {upper}")
+                        deleted_channels += 1
+                    except Exception as e:
+                        log.warning("Could not delete channel for %s: %s", gid, e)
+                    await asyncio.sleep(0.3)
+
+            # Delete lobby role
+            r_id = lobby_roles.pop(gid, None)
+            if r_id:
+                r = guild.get_role(r_id)
+                if r:
+                    try:
+                        await r.delete(reason=f"Group {gid} deleted from {upper}")
+                        deleted_roles += 1
+                    except Exception as e:
+                        log.warning("Could not delete role for %s: %s", gid, e)
+                    await asyncio.sleep(0.3)
+
+            # Delete registrations and teams for this group
+            await registrations_col().delete_many({
+                "guild_id": guild.id, "panel_id": panel_id, "group_id": gid,
+            })
+            await teams_col().delete_many({
+                "guild_id": guild.id, "panel_id": panel_id, "group_id": gid,
+            })
+
+            deleted_groups.append(gid)
+
+        # Remove schedules for deleted groups
+        new_schedules = [s for s in schedules if s.get("group_id") not in group_ids]
+        new_group_count = len(new_schedules)
+
+        await panels_col().update_one(
+            {"guild_id": guild.id, "panel_id": panel_id},
+            {"$set": {
+                "schedules": new_schedules,
+                "group_count": new_group_count,
+                "channel_ids.lobby_channels": lobby_channels,
+                "channel_ids.lobby_roles": lobby_roles,
+            }},
+        )
+
+        if deleted_groups:
+            return (
+                f"🗑️ **Groups Deleted: {', '.join(deleted_groups)}**\n"
+                f"• Channels removed: **{deleted_channels}**\n"
+                f"• Roles removed: **{deleted_roles}**\n"
+                f"• Registrations & teams cleared\n"
+                f"• Remaining groups: **{new_group_count}**\n"
+                f"Click **🚀 Post to Reg Portal** to update the registration embed."
+            )
+        return "ℹ️ No matching groups found to delete."
 
     async def send_slot_lists_to_lobbies(self, guild: discord.Guild, panel_id: str) -> None:
         """Send formatted match reminders and slot list embeds into each lobby channel."""
